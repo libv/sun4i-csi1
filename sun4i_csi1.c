@@ -33,7 +33,78 @@ struct sun4i_csi1 {
 	struct reset_control *reset;
 
 	void __iomem *mmio;
+
+	bool powered;
 };
+
+static int sun4i_csi1_poweron(struct sun4i_csi1 *csi)
+{
+	struct device *dev = csi->dev;
+	int ret;
+
+	dev_info(dev, "%s();\n", __func__);
+
+	ret = reset_control_deassert(csi->reset);
+	if (ret) {
+		dev_err(dev, "%s(): reset_control_deassert() failed: %d.\n",
+			__func__, ret);
+		goto err_reset;
+	}
+
+	ret = clk_prepare_enable(csi->clk_bus);
+	if (ret) {
+		dev_err(dev, "%s(): clk_prepare_enable(bus) failed: %d.\n",
+			__func__, ret);
+		goto err_bus;
+	}
+
+	ret = clk_prepare_enable(csi->clk_ram);
+	if (ret) {
+		dev_err(dev, "%s(): clk_prepare_enable(ram) failed: %d.\n",
+			__func__, ret);
+		goto err_ram;
+	}
+
+	clk_set_rate(csi->clk_module, 24000000);
+	ret = clk_prepare_enable(csi->clk_module);
+	if (ret) {
+		dev_err(dev, "%s(): clk_prepare_enable(module) failed: %d.\n",
+			__func__, ret);
+		goto err_module;
+	}
+
+	return 0;
+
+ err_module:
+	clk_disable_unprepare(csi->clk_ram);
+ err_ram:
+	clk_disable_unprepare(csi->clk_bus);
+ err_bus:
+	reset_control_assert(csi->reset);
+ err_reset:
+	return ret;
+}
+
+/*
+ * We do not bother with checking return values here, we are powering
+ * down anyway.
+ */
+static int sun4i_csi1_poweroff(struct sun4i_csi1 *csi)
+{
+	struct device *dev = csi->dev;
+
+	dev_info(dev, "%s();\n", __func__);
+
+	clk_disable_unprepare(csi->clk_module);
+
+	clk_disable_unprepare(csi->clk_ram);
+
+	clk_disable_unprepare(csi->clk_bus);
+
+	reset_control_assert(csi->reset);
+
+	return 0;
+}
 
 static irqreturn_t sun4i_csi1_isr(int irq, void *dev_id)
 {
@@ -106,6 +177,37 @@ static int sun4i_csi1_resources_get(struct sun4i_csi1 *csi,
 	return 0;
 }
 
+/*
+ * We might want to power up/down depending on actual usage though.
+ */
+static int sun4i_csi1_resume(struct device *dev)
+{
+	struct sun4i_csi1 *csi = dev_get_drvdata(dev);
+
+	dev_info(dev, "%s();\n", __func__);
+
+	if (!csi->powered)
+		return 0;
+
+	return sun4i_csi1_poweron(csi);
+}
+
+static int sun4i_csi1_suspend(struct device *dev)
+{
+	struct sun4i_csi1 *csi = dev_get_drvdata(dev);
+
+	dev_info(dev, "%s();\n", __func__);
+
+	if (!csi->powered)
+		return 0;
+
+	return sun4i_csi1_poweroff(csi);
+}
+
+static const struct dev_pm_ops sun4i_csi1_pm_ops = {
+	SET_RUNTIME_PM_OPS(sun4i_csi1_suspend, sun4i_csi1_resume, NULL)
+};
+
 static int sun4i_csi1_probe(struct platform_device *platform_dev)
 {
 	struct device *dev = &platform_dev->dev;
@@ -151,6 +253,7 @@ static struct platform_driver sun4i_csi1_platform_driver = {
 	.driver = {
 		.name = MODULE_NAME,
 		.of_match_table = of_match_ptr(sun4i_csi1_of_match),
+		.pm = &sun4i_csi1_pm_ops,
 	},
 };
 module_platform_driver(sun4i_csi1_platform_driver);
