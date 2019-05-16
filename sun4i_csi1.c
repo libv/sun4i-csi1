@@ -19,6 +19,8 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/clk.h>
+#include <linux/reset.h>
+#include <linux/interrupt.h>
 
 #define MODULE_NAME	"sun4i-csi1"
 
@@ -28,15 +30,22 @@ struct sun4i_csi1 {
 	struct clk *clk_bus;
 	struct clk *clk_module;
 	struct clk *clk_ram;
+	struct reset_control *reset;
 
 	void __iomem *mmio;
 };
+
+static irqreturn_t sun4i_csi1_isr(int irq, void *dev_id)
+{
+	return IRQ_HANDLED;
+}
 
 static int sun4i_csi1_resources_get(struct sun4i_csi1 *csi,
 				    struct platform_device *platform_dev)
 {
 	struct device *dev = csi->dev;
 	struct resource *resource;
+	int irq, ret;
 
 	csi->clk_bus = devm_clk_get(dev, "bus");
 	if (IS_ERR(csi->clk_bus)) {
@@ -59,6 +68,13 @@ static int sun4i_csi1_resources_get(struct sun4i_csi1 *csi,
 		return PTR_ERR(csi->clk_ram);
 	}
 
+	csi->reset = devm_reset_control_get(dev, NULL);
+	if (IS_ERR(csi->reset)) {
+		dev_err(dev, "%s(): devm_reset_control_get() failed: %ld.\n",
+			__func__, PTR_ERR(csi->reset));
+		return PTR_ERR(csi->reset);
+	}
+
 	resource = platform_get_resource(platform_dev, IORESOURCE_MEM, 0);
 	if (!resource) {
 		dev_err(dev, "%s(): platform_get_resource() failed.\n",
@@ -71,6 +87,20 @@ static int sun4i_csi1_resources_get(struct sun4i_csi1 *csi,
 		dev_err(dev, "%s(): devm_ioremap_resource() failed: %ld.\n",
 			__func__, PTR_ERR(csi->mmio));
 		return PTR_ERR(csi->mmio);
+	}
+
+	irq = platform_get_irq(platform_dev, 0);
+	if (irq < 0) {
+		dev_err(dev, "%s(): platform_get_irq() failed: %d.\n",
+			__func__, -irq);
+		return -irq;
+	}
+
+	ret = devm_request_irq(dev, irq, sun4i_csi1_isr, 0, MODULE_NAME, csi);
+	if (ret) {
+		dev_err(dev, "%s(): devm_request_irq() failed: %d.\n",
+			__func__, ret);
+		return ret;
 	}
 
 	return 0;
