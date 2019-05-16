@@ -21,11 +21,24 @@
 
 #define MODULE_NAME	"sun4i-csi1"
 
+struct sun4i_csi1 {
+	struct device *dev;
+
+};
+
 static int sun4i_csi1_probe(struct platform_device *platform_dev)
 {
 	struct device *dev = &platform_dev->dev;
+	struct sun4i_csi1 *csi;
 
 	dev_info(dev, "%s();\n", __func__);
+
+	csi = devm_kzalloc(dev, sizeof(struct sun4i_csi1), GFP_KERNEL);
+	if (!csi)
+		return -ENOMEM;
+	csi->dev = dev;
+
+	platform_set_drvdata(platform_dev, csi);
 
 	return 0;
 }
