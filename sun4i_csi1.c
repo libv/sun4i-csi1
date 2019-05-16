@@ -21,6 +21,7 @@
 #include <linux/clk.h>
 #include <linux/reset.h>
 #include <linux/interrupt.h>
+#include <linux/io.h>
 
 #define MODULE_NAME	"sun4i-csi1"
 
@@ -36,6 +37,85 @@ struct sun4i_csi1 {
 
 	bool powered;
 };
+
+#define SUN4I_CSI1_ENABLE		0X000
+#define SUN4I_CSI1_CONFIG		0X004
+#define SUN4I_CSI1_CAPTURE		0X008
+#define SUN4I_CSI1_SCALE		0X00C
+#define SUN4I_CSI1_FIFO0_BUFFER_A	0X010
+#define SUN4I_CSI1_FIFO0_BUFFER_B	0X014
+#define SUN4I_CSI1_FIFO1_BUFFER_A	0X018
+#define SUN4I_CSI1_FIFO1_BUFFER_B	0X01C
+#define SUN4I_CSI1_FIFO2_BUFFER_A	0X020
+#define SUN4I_CSI1_FIFO2_BUFFER_B	0X024
+#define SUN4I_CSI1_BUFFER_CONTROL	0X028
+#define SUN4I_CSI1_BUFFER_STATUS	0X02C
+#define SUN4I_CSI1_INT_ENABLE		0X030
+#define SUN4I_CSI1_INT_STATUS		0X034
+#define SUN4I_CSI1_HSIZE		0X040
+#define SUN4I_CSI1_VSIZE		0X044
+#define SUN4I_CSI1_STRIDE		0X048
+
+static void __maybe_unused sun4i_csi1_write(struct sun4i_csi1 *csi,
+					    int address, uint32_t value)
+{
+	writel(value, csi->mmio + address);
+}
+
+static uint32_t __maybe_unused sun4i_csi1_read(struct sun4i_csi1 *csi,
+					       int address)
+{
+	return readl(csi->mmio + address);
+}
+
+static void __maybe_unused sun4i_csi1_mask(struct sun4i_csi1 *csi, int address,
+					   uint32_t value, uint32_t mask)
+{
+	uint32_t temp = readl(csi->mmio + address);
+
+	temp &= ~mask;
+	value &= mask;
+
+	writel(value | temp, csi->mmio + address);
+}
+
+static void __maybe_unused sun4i_registers_print(struct sun4i_csi1 *csi)
+{
+	pr_info("SUN4I_CSI1_ENABLE: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_ENABLE));
+	pr_info("SUN4I_CSI1_CONFIG: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_CONFIG));
+	pr_info("SUN4I_CSI1_CAPTURE: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_CAPTURE));
+	pr_info("SUN4I_CSI1_SCALE: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_SCALE));
+	pr_info("SUN4I_CSI1_FIFO0_BUFFER_A: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_FIFO0_BUFFER_A));
+	pr_info("SUN4I_CSI1_FIFO0_BUFFER_B: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_FIFO0_BUFFER_B));
+	pr_info("SUN4I_CSI1_FIFO1_BUFFER_A: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_FIFO1_BUFFER_A));
+	pr_info("SUN4I_CSI1_FIFO1_BUFFER_B: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_FIFO1_BUFFER_B));
+	pr_info("SUN4I_CSI1_FIFO2_BUFFER_A: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_FIFO2_BUFFER_A));
+	pr_info("SUN4I_CSI1_FIFO2_BUFFER_B: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_FIFO2_BUFFER_B));
+	pr_info("SUN4I_CSI1_BUFFER_CONTROL: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_BUFFER_CONTROL));
+	pr_info("SUN4I_CSI1_BUFFER_STATUS: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_BUFFER_STATUS));
+	pr_info("SUN4I_CSI1_INT_ENABLE: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_INT_ENABLE));
+	pr_info("SUN4I_CSI1_INT_STATUS: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_INT_STATUS));
+	pr_info("SUN4I_CSI1_HSIZE: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_HSIZE));
+	pr_info("SUN4I_CSI1_VSIZE: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_VSIZE));
+	pr_info("SUN4I_CSI1_STRIDE: 0x%02X\n",
+		sun4i_csi1_read(csi, SUN4I_CSI1_STRIDE));
+}
 
 static int sun4i_csi1_poweron(struct sun4i_csi1 *csi)
 {
@@ -73,6 +153,9 @@ static int sun4i_csi1_poweron(struct sun4i_csi1 *csi)
 		goto err_module;
 	}
 
+	/* enable module */
+	sun4i_csi1_mask(csi, SUN4I_CSI1_ENABLE, 0x01, 0x01);
+
 	return 0;
 
  err_module:
@@ -94,6 +177,9 @@ static int sun4i_csi1_poweroff(struct sun4i_csi1 *csi)
 	struct device *dev = csi->dev;
 
 	dev_info(dev, "%s();\n", __func__);
+
+	/* reset and disable module */
+	sun4i_csi1_mask(csi, SUN4I_CSI1_ENABLE, 0, 0x01);
 
 	clk_disable_unprepare(csi->clk_module);
 
@@ -227,14 +313,28 @@ static int sun4i_csi1_probe(struct platform_device *platform_dev)
 
 	platform_set_drvdata(platform_dev, csi);
 
+	ret =  sun4i_csi1_poweron(csi);
+	if (ret)
+		return ret;
+	csi->powered = true;
+
+	sun4i_registers_print(csi);
+
 	return 0;
 }
 
 static int sun4i_csi1_remove(struct platform_device *platform_dev)
 {
 	struct device *dev = &platform_dev->dev;
+	struct sun4i_csi1 *csi = platform_get_drvdata(platform_dev);
+	int ret;
 
 	dev_info(dev, "%s();\n", __func__);
+
+	ret =  sun4i_csi1_poweroff(csi);
+	if (ret)
+		return ret;
+	csi->powered = false;
 
 	return 0;
 }
