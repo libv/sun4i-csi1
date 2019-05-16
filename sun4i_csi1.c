@@ -24,12 +24,37 @@
 struct sun4i_csi1 {
 	struct device *dev;
 
+	void __iomem *mmio;
 };
+
+static int sun4i_csi1_resources_get(struct sun4i_csi1 *csi,
+				    struct platform_device *platform_dev)
+{
+	struct device *dev = csi->dev;
+	struct resource *resource;
+
+	resource = platform_get_resource(platform_dev, IORESOURCE_MEM, 0);
+	if (!resource) {
+		dev_err(dev, "%s(): platform_get_resource() failed.\n",
+			__func__);
+		return EINVAL;
+	}
+
+	csi->mmio = devm_ioremap_resource(dev, resource);
+	if (IS_ERR(csi->mmio)) {
+		dev_err(dev, "%s(): devm_ioremap_resource() failed: %ld.\n",
+			__func__, PTR_ERR(csi->mmio));
+		return PTR_ERR(csi->mmio);
+	}
+
+	return 0;
+}
 
 static int sun4i_csi1_probe(struct platform_device *platform_dev)
 {
 	struct device *dev = &platform_dev->dev;
 	struct sun4i_csi1 *csi;
+	int ret;
 
 	dev_info(dev, "%s();\n", __func__);
 
@@ -37,6 +62,10 @@ static int sun4i_csi1_probe(struct platform_device *platform_dev)
 	if (!csi)
 		return -ENOMEM;
 	csi->dev = dev;
+
+	ret = sun4i_csi1_resources_get(csi, platform_dev);
+	if (ret)
+		return ret;
 
 	platform_set_drvdata(platform_dev, csi);
 
