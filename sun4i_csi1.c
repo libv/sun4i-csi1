@@ -18,11 +18,16 @@
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/clk.h>
 
 #define MODULE_NAME	"sun4i-csi1"
 
 struct sun4i_csi1 {
 	struct device *dev;
+
+	struct clk *clk_bus;
+	struct clk *clk_module;
+	struct clk *clk_ram;
 
 	void __iomem *mmio;
 };
@@ -32,6 +37,27 @@ static int sun4i_csi1_resources_get(struct sun4i_csi1 *csi,
 {
 	struct device *dev = csi->dev;
 	struct resource *resource;
+
+	csi->clk_bus = devm_clk_get(dev, "bus");
+	if (IS_ERR(csi->clk_bus)) {
+		dev_err(dev, "%s(): devm_clk_get(bus) failed: %ld.\n",
+			__func__, PTR_ERR(csi->clk_bus));
+		return PTR_ERR(csi->clk_bus);
+	}
+
+	csi->clk_module = devm_clk_get(dev, "mod");
+	if (IS_ERR(csi->clk_module)) {
+		dev_err(dev, "%s(): devm_clk_get(module) failed: %ld.\n",
+			__func__, PTR_ERR(csi->clk_module));
+		return PTR_ERR(csi->clk_module);
+	}
+
+	csi->clk_ram = devm_clk_get(dev, "ram");
+	if (IS_ERR(csi->clk_ram)) {
+		dev_err(dev, "%s(): devm_clk_get(ram) failed: %ld.\n",
+			__func__, PTR_ERR(csi->clk_ram));
+		return PTR_ERR(csi->clk_ram);
+	}
 
 	resource = platform_get_resource(platform_dev, IORESOURCE_MEM, 0);
 	if (!resource) {
