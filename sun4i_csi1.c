@@ -23,6 +23,8 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 
+#include <media/v4l2-device.h>
+
 #define MODULE_NAME	"sun4i-csi1"
 
 struct sun4i_csi1 {
@@ -36,6 +38,8 @@ struct sun4i_csi1 {
 	void __iomem *mmio;
 
 	bool powered;
+
+	struct v4l2_device v4l2_dev[1];
 };
 
 #define SUN4I_CSI1_ENABLE		0X000
@@ -294,6 +298,28 @@ static const struct dev_pm_ops sun4i_csi1_pm_ops = {
 	SET_RUNTIME_PM_OPS(sun4i_csi1_suspend, sun4i_csi1_resume, NULL)
 };
 
+static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
+{
+	struct device *dev = csi->dev;
+	int ret;
+
+	ret = v4l2_device_register(dev, csi->v4l2_dev);
+	if (ret) {
+		dev_err(dev, "%s(): v4l2_device_register() failed: %d.\n",
+			__func__, ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int sun4i_csi1_v4l2_cleanup(struct sun4i_csi1 *csi)
+{
+	v4l2_device_unregister(csi->v4l2_dev);
+
+	return 0;
+}
+
 static int sun4i_csi1_probe(struct platform_device *platform_dev)
 {
 	struct device *dev = &platform_dev->dev;
@@ -320,6 +346,10 @@ static int sun4i_csi1_probe(struct platform_device *platform_dev)
 
 	sun4i_registers_print(csi);
 
+	ret = sun4i_csi1_v4l2_initialize(csi);
+	if (ret)
+		return ret;
+
 	return 0;
 }
 
@@ -330,6 +360,10 @@ static int sun4i_csi1_remove(struct platform_device *platform_dev)
 	int ret;
 
 	dev_info(dev, "%s();\n", __func__);
+
+	ret = sun4i_csi1_v4l2_cleanup(csi);
+	if (ret)
+		return ret;
 
 	ret =  sun4i_csi1_poweroff(csi);
 	if (ret)
