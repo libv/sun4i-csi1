@@ -40,6 +40,7 @@ struct sun4i_csi1 {
 	bool powered;
 
 	struct v4l2_device v4l2_dev[1];
+	struct v4l2_format v4l2_format[1];
 };
 
 #define SUN4I_CSI1_ENABLE		0X000
@@ -298,6 +299,31 @@ static const struct dev_pm_ops sun4i_csi1_pm_ops = {
 	SET_RUNTIME_PM_OPS(sun4i_csi1_suspend, sun4i_csi1_resume, NULL)
 };
 
+/*
+ * We currently only care about 24bit RGB.
+ */
+static void sun4i_csi1_format_initialize(struct sun4i_csi1 *csi,
+					 int width, int height)
+{
+	struct v4l2_pix_format *pixel = &csi->v4l2_format->fmt.pix;
+
+	csi->v4l2_format->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+	pixel->pixelformat = V4L2_PIX_FMT_RGB24;
+
+	pixel->width = width;
+	pixel->height = height;
+
+	pixel->bytesperline = pixel->width * 3;
+	pixel->sizeimage = pixel->bytesperline * pixel->height;
+
+	pixel->field = V4L2_FIELD_NONE;
+
+	pixel->colorspace = V4L2_COLORSPACE_RAW;
+	pixel->quantization = V4L2_QUANTIZATION_DEFAULT;
+	pixel->xfer_func = V4L2_XFER_FUNC_NONE;
+}
+
 static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
 {
 	struct device *dev = csi->dev;
@@ -309,6 +335,8 @@ static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
 			__func__, ret);
 		return ret;
 	}
+
+	sun4i_csi1_format_initialize(csi, 640, 480);
 
 	return 0;
 }
