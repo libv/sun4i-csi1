@@ -41,6 +41,23 @@ struct sun4i_csi1 {
 
 	struct v4l2_device v4l2_dev[1];
 	struct v4l2_format v4l2_format[1];
+
+	/*
+	 * We need these values as allwinners CSI does not take in DE, and
+	 * needs to be told the distance between h/vsync and the start of
+	 * pixel data.
+	 * When we have the adv7611 running, we should read this information
+	 * from the ADV7611 registers
+	 */
+	int hdisplay_start;
+	int vdisplay_start;
+
+	/*
+	 * This too needs to be preset, and will be read from the adv7611
+	 * in future.
+	 */
+	bool hsync_polarity;
+	bool vsync_polarity;
 };
 
 #define SUN4I_CSI1_ENABLE		0X000
@@ -303,7 +320,11 @@ static const struct dev_pm_ops sun4i_csi1_pm_ops = {
  * We currently only care about 24bit RGB.
  */
 static void sun4i_csi1_format_initialize(struct sun4i_csi1 *csi,
-					 int width, int height)
+					 int width, int height,
+					 int hdisplay_start,
+					 int vdisplay_start,
+					 bool hsync_polarity,
+					 bool vsync_polarity)
 {
 	struct v4l2_pix_format *pixel = &csi->v4l2_format->fmt.pix;
 
@@ -322,6 +343,11 @@ static void sun4i_csi1_format_initialize(struct sun4i_csi1 *csi,
 	pixel->colorspace = V4L2_COLORSPACE_RAW;
 	pixel->quantization = V4L2_QUANTIZATION_DEFAULT;
 	pixel->xfer_func = V4L2_XFER_FUNC_NONE;
+
+	csi->hdisplay_start = hdisplay_start;
+	csi->vdisplay_start = vdisplay_start;
+	csi->hsync_polarity = hsync_polarity;
+	csi->vsync_polarity = vsync_polarity;
 }
 
 static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
@@ -336,7 +362,13 @@ static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
 		return ret;
 	}
 
-	sun4i_csi1_format_initialize(csi, 640, 480);
+	/*
+	 * vesa 640x480@60Hz: 640 656 752 800  480 490 492 525
+	 * xtotal - xsync_start = xdisplay_start
+	 * h: 800 - 656 = 144
+	 * v: 525 - 492 = 33
+	 */
+	sun4i_csi1_format_initialize(csi, 640, 480, 144, 33, true, true);
 
 	return 0;
 }
