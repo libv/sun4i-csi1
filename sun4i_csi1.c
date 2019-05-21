@@ -25,8 +25,11 @@
 #include <linux/mutex.h>
 
 #include <media/v4l2-device.h>
+#include <media/v4l2-ctrls.h>
 #include <media/videobuf2-v4l2.h>
 #include <media/videobuf2-dma-contig.h>
+#include <media/v4l2-ioctl.h>
+#include <media/v4l2-event.h>
 
 #define MODULE_NAME	"sun4i-csi1"
 
@@ -69,6 +72,8 @@ struct sun4i_csi1 {
 
 	struct vb2_queue vb2_queue[1];
 	struct mutex vb2_queue_lock[1];
+
+	struct video_device slashdev[1];
 };
 
 #define SUN4I_CSI1_ENABLE		0X000
@@ -455,6 +460,206 @@ static void sun4i_csi1_vb2_queue_free(struct sun4i_csi1 *csi)
 	mutex_destroy(csi->vb2_queue_lock);
 }
 
+static const struct v4l2_file_operations sun4i_csi1_slashdev_fops = {
+	.owner = THIS_MODULE,
+	.open = v4l2_fh_open,
+	.release = vb2_fop_release,
+	.unlocked_ioctl = video_ioctl2,
+	.mmap = vb2_fop_mmap,
+	.poll = vb2_fop_poll,
+};
+
+static int sun4i_csi1_ioctl_capability_query(struct file *file, void *handle,
+					     struct v4l2_capability *capability)
+{
+	struct sun4i_csi1 *csi = video_drvdata(file);
+
+	dev_info(csi->dev, "%s();\n", __func__);
+
+	strscpy(capability->driver, "sun4i_csi1", sizeof(capability->driver));
+	strscpy(capability->card, csi->slashdev->name,
+		sizeof(capability->card));
+
+	snprintf(capability->bus_info, sizeof(capability->bus_info),
+		 "platform:%s", csi->dev->of_node->name);
+
+	return 0;
+}
+
+static int sun4i_csi1_ioctl_format_enumerate(struct file *file, void *handle,
+					     struct v4l2_fmtdesc *descriptor)
+{
+	struct sun4i_csi1 *csi = video_drvdata(file);
+
+	dev_info(csi->dev, "%s();\n", __func__);
+
+	if (descriptor->index > 0)
+		return -EINVAL;
+
+	descriptor->pixelformat = V4L2_PIX_FMT_RGB24;
+
+	return 0;
+}
+
+static int sun4i_csi1_ioctl_format_get(struct file *file, void *handle,
+			       struct v4l2_format *format)
+{
+	struct sun4i_csi1 *csi = video_drvdata(file);
+
+	dev_info(csi->dev, "%s();\n", __func__);
+
+	*format = csi->v4l2_format[0];
+
+	return 0;
+}
+
+static int sun4i_csi1_format_test(struct v4l2_format *old,
+				  struct v4l2_format *new)
+{
+	struct v4l2_pix_format *pixel_old = &old->fmt.pix;
+	struct v4l2_pix_format *pixel_new = &new->fmt.pix;
+
+	if (old->type != new->type)
+		return -EINVAL;
+
+	if ((pixel_old->pixelformat != pixel_new->pixelformat) ||
+	    (pixel_old->width != pixel_new->width) ||
+	    (pixel_old->height != pixel_new->height) ||
+	    (pixel_old->bytesperline != pixel_new->bytesperline) ||
+	    (pixel_old->sizeimage != pixel_new->sizeimage) ||
+	    (pixel_old->field != pixel_new->field) ||
+	    (pixel_old->colorspace != pixel_new->colorspace) ||
+	    (pixel_old->quantization != pixel_new->quantization) ||
+	    (pixel_old->xfer_func != pixel_new->xfer_func))
+		return -EINVAL;
+
+	return 0;
+}
+
+static int sun4i_csi1_ioctl_format_set(struct file *file, void *handle,
+				       struct v4l2_format *format)
+{
+	struct sun4i_csi1 *csi = video_drvdata(file);
+
+	dev_info(csi->dev, "%s();\n", __func__);
+
+	return sun4i_csi1_format_test(csi->v4l2_format, format);
+}
+
+static int sun4i_csi1_ioctl_format_try(struct file *file, void *handle,
+				       struct v4l2_format *format)
+{
+	struct sun4i_csi1 *csi = video_drvdata(file);
+
+	dev_info(csi->dev, "%s();\n", __func__);
+
+	return sun4i_csi1_format_test(csi->v4l2_format, format);
+}
+
+static int sun4i_csi1_ioctl_input_enumerate(struct file *file, void *handle,
+					    struct v4l2_input *input)
+{
+	struct sun4i_csi1 *csi = video_drvdata(file);
+
+	dev_info(csi->dev, "%s();\n", __func__);
+
+	if (input->index)
+		return -EINVAL;
+
+	strscpy(input->name, "direct", sizeof(input->name));
+	input->type = V4L2_INPUT_TYPE_CAMERA;
+
+	return 0;
+}
+
+static int sun4i_csi1_ioctl_input_set(struct file *file, void *handle,
+				      unsigned int input)
+{
+	struct sun4i_csi1 *csi = video_drvdata(file);
+
+	dev_info(csi->dev, "%s();\n", __func__);
+
+	if (input)
+		return -EINVAL;
+
+	return 0;
+}
+
+static int sun4i_csi1_ioctl_input_get(struct file *file, void *handle,
+				      unsigned int *input)
+{
+	struct sun4i_csi1 *csi = video_drvdata(file);
+
+	dev_info(csi->dev, "%s();\n", __func__);
+
+	*input = 0;
+
+	return 0;
+}
+
+static const struct v4l2_ioctl_ops sun4i_csi1_ioctl_ops = {
+	.vidioc_querycap = sun4i_csi1_ioctl_capability_query,
+	.vidioc_enum_fmt_vid_cap = sun4i_csi1_ioctl_format_enumerate,
+	.vidioc_g_fmt_vid_cap = sun4i_csi1_ioctl_format_get,
+	.vidioc_s_fmt_vid_cap = sun4i_csi1_ioctl_format_set,
+	.vidioc_try_fmt_vid_cap = sun4i_csi1_ioctl_format_try,
+
+	.vidioc_enum_input = sun4i_csi1_ioctl_input_enumerate,
+	.vidioc_s_input = sun4i_csi1_ioctl_input_set,
+	.vidioc_g_input = sun4i_csi1_ioctl_input_get,
+
+	.vidioc_reqbufs = vb2_ioctl_reqbufs,
+	.vidioc_querybuf = vb2_ioctl_querybuf,
+	.vidioc_qbuf = vb2_ioctl_qbuf,
+	.vidioc_expbuf = vb2_ioctl_expbuf,
+	.vidioc_dqbuf = vb2_ioctl_dqbuf,
+	.vidioc_create_bufs = vb2_ioctl_create_bufs,
+	.vidioc_prepare_buf = vb2_ioctl_prepare_buf,
+	.vidioc_streamon = vb2_ioctl_streamon,
+	.vidioc_streamoff = vb2_ioctl_streamoff,
+
+	.vidioc_log_status = v4l2_ctrl_log_status,
+	.vidioc_subscribe_event = v4l2_ctrl_subscribe_event,
+	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
+};
+
+static int sun4i_csi1_slashdev_initialize(struct sun4i_csi1 *csi)
+{
+	struct video_device *slashdev = csi->slashdev;
+	int ret;
+
+	video_set_drvdata(slashdev, csi);
+	strscpy(slashdev->name, KBUILD_MODNAME, sizeof(slashdev->name));
+
+	slashdev->vfl_type = VFL_TYPE_GRABBER;
+	slashdev->vfl_dir = VFL_DIR_RX;
+	slashdev->device_caps = V4L2_CAP_STREAMING | V4L2_CAP_VIDEO_CAPTURE;
+
+	slashdev->v4l2_dev = csi->v4l2_dev;
+	slashdev->queue = csi->vb2_queue;
+	slashdev->lock = csi->vb2_queue_lock;
+
+	slashdev->release = video_device_release_empty;
+	slashdev->fops = &sun4i_csi1_slashdev_fops;
+	slashdev->ioctl_ops = &sun4i_csi1_ioctl_ops;
+
+	ret = video_register_device(slashdev, VFL_TYPE_GRABBER, -1);
+	if (ret) {
+		dev_err(csi->dev, "%s(): video_register_device failed: %d\n",
+			__func__, ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static void sun4i_csi1_slashdev_free(struct sun4i_csi1 *csi)
+{
+	struct video_device *slashdev = csi->slashdev;
+
+	video_unregister_device(slashdev);
+}
+
 static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
 {
 	struct device *dev = csi->dev;
@@ -479,15 +684,21 @@ static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
 	if (ret)
 		goto error;
 
+	ret = sun4i_csi1_slashdev_initialize(csi);
+	if (ret)
+		goto error;
+
 	return 0;
 
  error:
+	sun4i_csi1_vb2_queue_free(csi);
 	v4l2_device_unregister(csi->v4l2_dev);
 	return ret;
 }
 
 static int sun4i_csi1_v4l2_cleanup(struct sun4i_csi1 *csi)
 {
+	sun4i_csi1_slashdev_free(csi);
 	sun4i_csi1_vb2_queue_free(csi);
 	v4l2_device_unregister(csi->v4l2_dev);
 
