@@ -22,10 +22,18 @@
 #include <linux/reset.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/mutex.h>
 
 #include <media/v4l2-device.h>
+#include <media/videobuf2-v4l2.h>
+#include <media/videobuf2-dma-contig.h>
 
 #define MODULE_NAME	"sun4i-csi1"
+
+struct sun4i_csi1_buffer {
+	struct vb2_v4l2_buffer v4l2_buffer;
+	struct list_head list;
+};
 
 struct sun4i_csi1 {
 	struct device *dev;
@@ -58,6 +66,9 @@ struct sun4i_csi1 {
 	 */
 	bool hsync_polarity;
 	bool vsync_polarity;
+
+	struct vb2_queue vb2_queue[1];
+	struct mutex vb2_queue_lock[1];
 };
 
 #define SUN4I_CSI1_ENABLE		0X000
@@ -350,6 +361,100 @@ static void sun4i_csi1_format_initialize(struct sun4i_csi1 *csi,
 	csi->vsync_polarity = vsync_polarity;
 }
 
+static int sun4i_csi1_queue_setup(struct vb2_queue *queue,
+				  unsigned int *buffer_count,
+				  unsigned int *planes_count,
+				  unsigned int sizes[],
+				  struct device *alloc_devs[])
+{
+	struct sun4i_csi1 *csi = vb2_get_drv_priv(queue);
+
+	dev_info(csi->dev, "%s();\n", __func__);
+
+	return 0;
+}
+
+static int sun4i_csi1_buffer_prepare(struct vb2_buffer *vb2_buffer)
+{
+	struct sun4i_csi1 *csi = vb2_get_drv_priv(vb2_buffer->vb2_queue);
+
+	vb2_set_plane_payload(vb2_buffer, 0,
+			      csi->v4l2_format->fmt.pix.sizeimage);
+
+	return 0;
+}
+
+static void sun4i_csi1_buffer_queue(struct vb2_buffer *vb2_buffer)
+{
+
+}
+
+static int sun4i_csi1_streaming_start(struct vb2_queue *queue, unsigned int count)
+{
+	struct sun4i_csi1 *csi = vb2_get_drv_priv(queue);
+
+	dev_info(csi->dev, "%s();\n", __func__);
+
+	return 0;
+}
+
+static void sun4i_csi1_streaming_stop(struct vb2_queue *queue)
+{
+	struct sun4i_csi1 *csi = vb2_get_drv_priv(queue);
+
+	dev_info(csi->dev, "%s();\n", __func__);
+}
+
+static const struct vb2_ops sun4i_csi1_vb2_queue_ops = {
+	.queue_setup = sun4i_csi1_queue_setup,
+	.buf_prepare = sun4i_csi1_buffer_prepare,
+	.buf_queue = sun4i_csi1_buffer_queue,
+	.start_streaming = sun4i_csi1_streaming_start,
+	.stop_streaming = sun4i_csi1_streaming_stop,
+	.wait_prepare = vb2_ops_wait_prepare,
+	.wait_finish = vb2_ops_wait_finish,
+};
+
+static int sun4i_csi1_vb2_queue_initialize(struct sun4i_csi1 *csi)
+{
+	struct vb2_queue *queue = csi->vb2_queue;
+	int ret;
+
+	queue->drv_priv = csi;
+	queue->dev = csi->dev;
+
+	queue->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	queue->io_modes = VB2_MMAP | VB2_DMABUF;
+	queue->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+
+	queue->min_buffers_needed = 3;
+	queue->buf_struct_size = sizeof(struct sun4i_csi1_buffer);
+
+	queue->ops = &sun4i_csi1_vb2_queue_ops;
+	queue->mem_ops = &vb2_dma_contig_memops;
+
+	mutex_init(csi->vb2_queue_lock);
+	queue->lock = csi->vb2_queue_lock;
+
+	ret = vb2_queue_init(queue);
+	if (ret) {
+		dev_err(csi->dev, "%s(): vb2_queue_init() failed: %d\n",
+			__func__, ret);
+		mutex_destroy(csi->vb2_queue_lock);
+		return ret;
+	}
+
+	return 0;
+}
+
+static void sun4i_csi1_vb2_queue_free(struct sun4i_csi1 *csi)
+{
+	struct vb2_queue *queue = csi->vb2_queue;
+
+	vb2_queue_release(queue);
+	mutex_destroy(csi->vb2_queue_lock);
+}
+
 static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
 {
 	struct device *dev = csi->dev;
@@ -370,11 +475,20 @@ static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
 	 */
 	sun4i_csi1_format_initialize(csi, 640, 480, 144, 33, true, true);
 
+	ret = sun4i_csi1_vb2_queue_initialize(csi);
+	if (ret)
+		goto error;
+
 	return 0;
+
+ error:
+	v4l2_device_unregister(csi->v4l2_dev);
+	return ret;
 }
 
 static int sun4i_csi1_v4l2_cleanup(struct sun4i_csi1 *csi)
 {
+	sun4i_csi1_vb2_queue_free(csi);
 	v4l2_device_unregister(csi->v4l2_dev);
 
 	return 0;
