@@ -415,11 +415,27 @@ static int sun4i_csi1_streaming_start(struct vb2_queue *queue, unsigned int coun
 	return 0;
 }
 
+static void sun4i_csi1_buffers_mark_done(struct vb2_queue *queue)
+{
+	struct sun4i_csi1 *csi = vb2_get_drv_priv(queue);
+	int i;
+
+	dev_info(csi->dev, "%s(%d);\n", __func__, queue->num_buffers);
+
+	for (i = 0; i < queue->num_buffers; i++) {
+		/* only disable active buffers, otherwise we get a WARN_ON() */
+		if (queue->bufs[i]->state == VB2_BUF_STATE_ACTIVE)
+			vb2_buffer_done(queue->bufs[i], VB2_BUF_STATE_ERROR);
+	}
+}
+
 static void sun4i_csi1_streaming_stop(struct vb2_queue *queue)
 {
 	struct sun4i_csi1 *csi = vb2_get_drv_priv(queue);
 
 	dev_info(csi->dev, "%s();\n", __func__);
+
+	sun4i_csi1_buffers_mark_done(queue);
 }
 
 static const struct vb2_ops sun4i_csi1_vb2_queue_ops = {
