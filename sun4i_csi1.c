@@ -409,8 +409,16 @@ static void sun4i_csi1_buffer_queue(struct vb2_buffer *vb2_buffer)
 static int sun4i_csi1_streaming_start(struct vb2_queue *queue, unsigned int count)
 {
 	struct sun4i_csi1 *csi = vb2_get_drv_priv(queue);
+	int ret;
 
 	dev_info(csi->dev, "%s();\n", __func__);
+
+	ret =  sun4i_csi1_poweron(csi);
+	if (ret)
+		return ret;
+	csi->powered = true;
+
+	sun4i_registers_print(csi);
 
 	return 0;
 }
@@ -436,6 +444,9 @@ static void sun4i_csi1_streaming_stop(struct vb2_queue *queue)
 	dev_info(csi->dev, "%s();\n", __func__);
 
 	sun4i_csi1_buffers_mark_done(queue);
+
+	sun4i_csi1_poweroff(csi);
+	csi->powered = false;
 }
 
 static const struct vb2_ops sun4i_csi1_vb2_queue_ops = {
@@ -752,13 +763,6 @@ static int sun4i_csi1_probe(struct platform_device *platform_dev)
 
 	platform_set_drvdata(platform_dev, csi);
 
-	ret =  sun4i_csi1_poweron(csi);
-	if (ret)
-		return ret;
-	csi->powered = true;
-
-	sun4i_registers_print(csi);
-
 	ret = sun4i_csi1_v4l2_initialize(csi);
 	if (ret)
 		return ret;
@@ -777,11 +781,6 @@ static int sun4i_csi1_remove(struct platform_device *platform_dev)
 	ret = sun4i_csi1_v4l2_cleanup(csi);
 	if (ret)
 		return ret;
-
-	ret =  sun4i_csi1_poweroff(csi);
-	if (ret)
-		return ret;
-	csi->powered = false;
 
 	return 0;
 }
