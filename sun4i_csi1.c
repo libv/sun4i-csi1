@@ -374,7 +374,19 @@ static int sun4i_csi1_queue_setup(struct vb2_queue *queue,
 {
 	struct sun4i_csi1 *csi = vb2_get_drv_priv(queue);
 
-	dev_info(csi->dev, "%s();\n", __func__);
+	if (buffer_count)
+		dev_info(csi->dev, "%s(%d);\n", __func__, *buffer_count);
+	else
+		dev_info(csi->dev, "%s();\n", __func__);
+
+	if (*planes_count) {
+		dev_err(csi->dev, "%s: invalid planes_count pointer.\n",
+			__func__);
+		return -EINVAL;
+	}
+
+	*planes_count = 1;
+	sizes[0] = csi->v4l2_format->fmt.pix.sizeimage;
 
 	return 0;
 }
