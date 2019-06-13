@@ -81,6 +81,7 @@ struct sun4i_csi1 {
 	 * buffer addresses in the registers.
 	 */
 	struct spinlock buffer_lock[1];
+	struct list_head buffer_list[1];
 };
 
 #define SUN4I_CSI1_ENABLE		0X000
@@ -447,16 +448,32 @@ static int sun4i_csi1_queue_setup(struct vb2_queue *queue,
 static int sun4i_csi1_buffer_prepare(struct vb2_buffer *vb2_buffer)
 {
 	struct sun4i_csi1 *csi = vb2_get_drv_priv(vb2_buffer->vb2_queue);
+	struct vb2_v4l2_buffer *v4l2_buffer = to_vb2_v4l2_buffer(vb2_buffer);
+	struct sun4i_csi1_buffer *buffer =
+		container_of(v4l2_buffer, struct sun4i_csi1_buffer,
+			     v4l2_buffer);
 
 	vb2_set_plane_payload(vb2_buffer, 0,
 			      csi->v4l2_format->fmt.pix.sizeimage);
+
+	/* make very sure that this is properly initialized */
+	INIT_LIST_HEAD(&buffer->list);
 
 	return 0;
 }
 
 static void sun4i_csi1_buffer_queue(struct vb2_buffer *vb2_buffer)
 {
+	struct sun4i_csi1 *csi = vb2_get_drv_priv(vb2_buffer->vb2_queue);
+	struct vb2_v4l2_buffer *v4l2_buffer = to_vb2_v4l2_buffer(vb2_buffer);
+	struct sun4i_csi1_buffer *buffer =
+		container_of(v4l2_buffer, struct sun4i_csi1_buffer,
+			     v4l2_buffer);
+	unsigned long flags;
 
+	spin_lock_irqsave(csi->buffer_lock, flags);
+	list_add_tail(&buffer->list, csi->buffer_list);
+	spin_unlock_irqrestore(csi->buffer_lock, flags);
 }
 
 static int sun4i_csi1_streaming_start(struct vb2_queue *queue, unsigned int count)
@@ -484,9 +501,21 @@ static void sun4i_csi1_buffers_mark_done(struct vb2_queue *queue)
 	dev_info(csi->dev, "%s(%d);\n", __func__, queue->num_buffers);
 
 	for (i = 0; i < queue->num_buffers; i++) {
+		struct vb2_buffer *vb2_buffer = queue->bufs[i];
+		struct vb2_v4l2_buffer *v4l2_buffer =
+			to_vb2_v4l2_buffer(vb2_buffer);
+		struct sun4i_csi1_buffer *buffer =
+			container_of(v4l2_buffer, struct sun4i_csi1_buffer,
+				     v4l2_buffer);
+		unsigned long flags;
+
+		spin_lock_irqsave(csi->buffer_lock, flags);
+		list_del(&buffer->list);
+		spin_unlock_irqrestore(csi->buffer_lock, flags);
+
 		/* only disable active buffers, otherwise we get a WARN_ON() */
-		if (queue->bufs[i]->state == VB2_BUF_STATE_ACTIVE)
-			vb2_buffer_done(queue->bufs[i], VB2_BUF_STATE_ERROR);
+		if (vb2_buffer->state == VB2_BUF_STATE_ACTIVE)
+			vb2_buffer_done(vb2_buffer, VB2_BUF_STATE_ERROR);
 	}
 }
 
@@ -534,6 +563,7 @@ static int sun4i_csi1_vb2_queue_initialize(struct sun4i_csi1 *csi)
 	queue->lock = csi->vb2_queue_lock;
 
 	spin_lock_init(csi->buffer_lock);
+	INIT_LIST_HEAD(csi->buffer_list);
 
 	ret = vb2_queue_init(queue);
 	if (ret) {
