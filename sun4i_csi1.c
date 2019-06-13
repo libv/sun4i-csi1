@@ -84,7 +84,7 @@ struct sun4i_csi1 {
 	struct spinlock buffer_lock[1];
 	struct list_head buffer_list[1];
 
-	struct sun4i_csi1_buffer *buffer;
+	struct sun4i_csi1_buffer *buffers[2];
 	uint64_t sequence;
 };
 
@@ -295,23 +295,35 @@ static void sun4i_csi1_frame_done(struct sun4i_csi1 *csi)
 {
 	struct v4l2_pix_format *pixel = &csi->v4l2_format->fmt.pix;
 	int offset = pixel->width * pixel->height;
-	struct sun4i_csi1_buffer *old;
+	struct sun4i_csi1_buffer *old, *new;
 	uint64_t sequence;
+	uint32_t dma_addr;
+	int index;
 
 	spin_lock(csi->buffer_lock);
 
 	sequence = csi->sequence;
 	csi->sequence++;
 
-	old = csi->buffer;
+	index = sequence & 0x01;
 
-	csi->buffer = list_first_entry(csi->buffer_list,
+	old = csi->buffers[index];
+
+	new = list_first_entry(csi->buffer_list,
 			       struct sun4i_csi1_buffer, list);
-	list_del_init(&csi->buffer->list);
+	list_del_init(&new->list);
+	dma_addr = new->dma_addr;
+	csi->buffers[index] = new;
 
-	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_A, csi->buffer->dma_addr);
-	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_A, csi->buffer->dma_addr + offset);
-	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_A, csi->buffer->dma_addr + 2 * offset);
+	if (!index) {
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_A, dma_addr);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_A, dma_addr + offset);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_A, dma_addr + 2 * offset);
+	} else {
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_B, dma_addr);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_B, dma_addr + offset);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_B, dma_addr + 2 * offset);
+	}
 
 	spin_unlock(csi->buffer_lock);
 
@@ -574,9 +586,13 @@ static void sun4i_csi1_engine_start(struct sun4i_csi1 *csi)
 	spin_lock_irqsave(csi->buffer_lock, flags);
 
 	csi->sequence = 0;
-	csi->buffer = list_first_entry(csi->buffer_list,
-				       struct sun4i_csi1_buffer, list);
-	list_del_init(&csi->buffer->list);
+
+	csi->buffers[0] = list_first_entry(csi->buffer_list,
+					   struct sun4i_csi1_buffer, list);
+	list_del_init(&csi->buffers[0]->list);
+	csi->buffers[1] = list_first_entry(csi->buffer_list,
+					   struct sun4i_csi1_buffer, list);
+	list_del_init(&csi->buffers[1]->list);
 
 	/* set input format: yuv444 */
 	sun4i_csi1_mask(csi, SUN4I_CSI1_CONFIG, 0x00400000, 0x00700000);
@@ -597,12 +613,16 @@ static void sun4i_csi1_engine_start(struct sun4i_csi1 *csi)
 	sun4i_csi1_mask(csi, SUN4I_CSI1_CONFIG, 0, 0x01);
 
 	/* set buffer addresses */
-	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_A, csi->buffer->dma_addr);
-	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_A, csi->buffer->dma_addr + offset);
-	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_A, csi->buffer->dma_addr + 2 * offset);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_A, csi->buffers[0]->dma_addr);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_A, csi->buffers[0]->dma_addr + offset);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_A, csi->buffers[0]->dma_addr + 2 * offset);
 
-	/* disable double buffering */
-	sun4i_csi1_write(csi, SUN4I_CSI1_BUFFER_CONTROL, 0);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_B, csi->buffers[1]->dma_addr);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_B, csi->buffers[1]->dma_addr + offset);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_B, csi->buffers[1]->dma_addr + 2 * offset);
+
+	/* enable double buffering, and select buffer A first */
+	sun4i_csi1_write(csi, SUN4I_CSI1_BUFFER_CONTROL, 0x01);
 
 	/* enable interrupts: frame done */
 	sun4i_csi1_mask(csi, SUN4I_CSI1_INT_ENABLE, 0x02, 0x02);
