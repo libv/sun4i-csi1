@@ -74,6 +74,13 @@ struct sun4i_csi1 {
 	struct mutex vb2_queue_lock[1];
 
 	struct video_device slashdev[1];
+
+	/*
+	 * This is both a lock on the buffer list, and on the registers,
+	 * as playing with buffers invariably means updating at least
+	 * buffer addresses in the registers.
+	 */
+	struct spinlock buffer_lock[1];
 };
 
 #define SUN4I_CSI1_ENABLE		0X000
@@ -100,10 +107,37 @@ static void __maybe_unused sun4i_csi1_write(struct sun4i_csi1 *csi,
 	writel(value, csi->mmio + address);
 }
 
+static void __maybe_unused sun4i_csi1_write_spin(struct sun4i_csi1 *csi,
+						 int address, uint32_t value)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(csi->buffer_lock, flags);
+
+	writel(value, csi->mmio + address);
+
+	spin_unlock_irqrestore(csi->buffer_lock, flags);
+}
+
 static uint32_t __maybe_unused sun4i_csi1_read(struct sun4i_csi1 *csi,
 					       int address)
 {
 	return readl(csi->mmio + address);
+}
+
+static uint32_t __maybe_unused sun4i_csi1_read_spin(struct sun4i_csi1 *csi,
+						    int address)
+{
+	unsigned long flags;
+	uint32_t ret;
+
+	spin_lock_irqsave(csi->buffer_lock, flags);
+
+	ret = readl(csi->mmio + address);
+
+	spin_unlock_irqrestore(csi->buffer_lock, flags);
+
+	return ret;
 }
 
 static void __maybe_unused sun4i_csi1_mask(struct sun4i_csi1 *csi, int address,
@@ -117,42 +151,61 @@ static void __maybe_unused sun4i_csi1_mask(struct sun4i_csi1 *csi, int address,
 	writel(value | temp, csi->mmio + address);
 }
 
+static void __maybe_unused sun4i_csi1_mask_spin(struct sun4i_csi1 *csi,
+						int address,
+						uint32_t value, uint32_t mask)
+{
+	unsigned long flags;
+	uint32_t temp;
+
+	spin_lock_irqsave(csi->buffer_lock, flags);
+
+	temp = readl(csi->mmio + address);
+
+	temp &= ~mask;
+	value &= mask;
+
+	writel(value | temp, csi->mmio + address);
+
+	spin_unlock_irqrestore(csi->buffer_lock, flags);
+}
+
 static void __maybe_unused sun4i_registers_print(struct sun4i_csi1 *csi)
 {
 	pr_info("SUN4I_CSI1_ENABLE: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_ENABLE));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_ENABLE));
 	pr_info("SUN4I_CSI1_CONFIG: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_CONFIG));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_CONFIG));
 	pr_info("SUN4I_CSI1_CAPTURE: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_CAPTURE));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_CAPTURE));
 	pr_info("SUN4I_CSI1_SCALE: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_SCALE));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_SCALE));
 	pr_info("SUN4I_CSI1_FIFO0_BUFFER_A: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_FIFO0_BUFFER_A));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_FIFO0_BUFFER_A));
 	pr_info("SUN4I_CSI1_FIFO0_BUFFER_B: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_FIFO0_BUFFER_B));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_FIFO0_BUFFER_B));
 	pr_info("SUN4I_CSI1_FIFO1_BUFFER_A: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_FIFO1_BUFFER_A));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_FIFO1_BUFFER_A));
 	pr_info("SUN4I_CSI1_FIFO1_BUFFER_B: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_FIFO1_BUFFER_B));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_FIFO1_BUFFER_B));
 	pr_info("SUN4I_CSI1_FIFO2_BUFFER_A: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_FIFO2_BUFFER_A));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_FIFO2_BUFFER_A));
 	pr_info("SUN4I_CSI1_FIFO2_BUFFER_B: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_FIFO2_BUFFER_B));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_FIFO2_BUFFER_B));
 	pr_info("SUN4I_CSI1_BUFFER_CONTROL: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_BUFFER_CONTROL));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_BUFFER_CONTROL));
 	pr_info("SUN4I_CSI1_BUFFER_STATUS: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_BUFFER_STATUS));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_BUFFER_STATUS));
 	pr_info("SUN4I_CSI1_INT_ENABLE: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_INT_ENABLE));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_INT_ENABLE));
 	pr_info("SUN4I_CSI1_INT_STATUS: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_INT_STATUS));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_INT_STATUS));
 	pr_info("SUN4I_CSI1_HSIZE: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_HSIZE));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_HSIZE));
 	pr_info("SUN4I_CSI1_VSIZE: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_VSIZE));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_VSIZE));
 	pr_info("SUN4I_CSI1_STRIDE: 0x%02X\n",
-		sun4i_csi1_read(csi, SUN4I_CSI1_STRIDE));
+		sun4i_csi1_read_spin(csi, SUN4I_CSI1_STRIDE));
 }
 
 static int sun4i_csi1_poweron(struct sun4i_csi1 *csi)
@@ -192,7 +245,7 @@ static int sun4i_csi1_poweron(struct sun4i_csi1 *csi)
 	}
 
 	/* enable module */
-	sun4i_csi1_mask(csi, SUN4I_CSI1_ENABLE, 0x01, 0x01);
+	sun4i_csi1_mask_spin(csi, SUN4I_CSI1_ENABLE, 0x01, 0x01);
 
 	return 0;
 
@@ -217,7 +270,7 @@ static int sun4i_csi1_poweroff(struct sun4i_csi1 *csi)
 	dev_info(dev, "%s();\n", __func__);
 
 	/* reset and disable module */
-	sun4i_csi1_mask(csi, SUN4I_CSI1_ENABLE, 0, 0x01);
+	sun4i_csi1_mask_spin(csi, SUN4I_CSI1_ENABLE, 0, 0x01);
 
 	clk_disable_unprepare(csi->clk_module);
 
@@ -479,6 +532,8 @@ static int sun4i_csi1_vb2_queue_initialize(struct sun4i_csi1 *csi)
 
 	mutex_init(csi->vb2_queue_lock);
 	queue->lock = csi->vb2_queue_lock;
+
+	spin_lock_init(csi->buffer_lock);
 
 	ret = vb2_queue_init(queue);
 	if (ret) {
