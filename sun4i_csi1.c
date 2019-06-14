@@ -420,6 +420,41 @@ static void sun4i_csi1_format_initialize(struct sun4i_csi1 *csi,
 	csi->vsync_polarity = vsync_polarity;
 }
 
+/*
+ * This is second guessing v4l2 infrastructure, and to properly tell us when
+ * there are any buffers still present.
+ *
+ * This whole buffer management stuff has me wondering though, why can we not
+ * just ask vb2 infrastructure for the next queued buffer, and support us with
+ * double or triple buffering? Perhaps it does, and it just not often used?
+ */
+static void sun4i_csi1_buffer_list_clear(struct sun4i_csi1 *csi)
+{
+	while (1) {
+		struct sun4i_csi1_buffer *buffer;
+		unsigned long flags;
+
+		spin_lock_irqsave(csi->buffer_lock, flags);
+
+		buffer = list_first_entry_or_null(csi->buffer_list,
+						  struct sun4i_csi1_buffer,
+						  list);
+		if (buffer)
+			list_del(&buffer->list);
+
+		spin_unlock_irqrestore(csi->buffer_lock, flags);
+
+		if (!buffer)
+			break;
+
+		vb2_buffer_done(&buffer->v4l2_buffer.vb2_buf,
+				VB2_BUF_STATE_ERROR);
+
+		dev_err(csi->dev, "%s: Cleared buffer 0x%px from the queue.\n",
+			__func__, &buffer->v4l2_buffer.vb2_buf);
+	}
+}
+
 static int sun4i_csi1_queue_setup(struct vb2_queue *queue,
 				  unsigned int *buffer_count,
 				  unsigned int *planes_count,
@@ -441,6 +476,8 @@ static int sun4i_csi1_queue_setup(struct vb2_queue *queue,
 
 	*planes_count = 1;
 	sizes[0] = csi->v4l2_format->fmt.pix.sizeimage;
+
+	sun4i_csi1_buffer_list_clear(csi);
 
 	return 0;
 }
@@ -526,6 +563,8 @@ static void sun4i_csi1_streaming_stop(struct vb2_queue *queue)
 	dev_info(csi->dev, "%s();\n", __func__);
 
 	sun4i_csi1_buffers_mark_done(queue);
+
+	sun4i_csi1_buffer_list_clear(csi);
 
 	sun4i_csi1_poweroff(csi);
 	csi->powered = false;
