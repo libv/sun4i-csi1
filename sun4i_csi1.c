@@ -36,6 +36,7 @@
 struct sun4i_csi1_buffer {
 	struct vb2_v4l2_buffer v4l2_buffer;
 	struct list_head list;
+	dma_addr_t dma_addr;
 };
 
 struct sun4i_csi1 {
@@ -495,6 +496,7 @@ static int sun4i_csi1_buffer_prepare(struct vb2_buffer *vb2_buffer)
 
 	/* make very sure that this is properly initialized */
 	INIT_LIST_HEAD(&buffer->list);
+	buffer->dma_addr = vb2_dma_contig_plane_dma_addr(vb2_buffer, 0);
 
 	return 0;
 }
@@ -513,6 +515,67 @@ static void sun4i_csi1_buffer_queue(struct vb2_buffer *vb2_buffer)
 	spin_unlock_irqrestore(csi->buffer_lock, flags);
 }
 
+static void sun4i_csi1_engine_start(struct sun4i_csi1 *csi)
+{
+	struct v4l2_pix_format *pixel = &csi->v4l2_format->fmt.pix;
+	struct sun4i_csi1_buffer *buffer;
+	int offset = pixel->width * pixel->height;
+	unsigned long flags;
+
+	spin_lock_irqsave(csi->buffer_lock, flags);
+
+	buffer = list_first_entry(csi->buffer_list,
+				  struct sun4i_csi1_buffer, list);
+
+	/* set input format: yuv444 */
+	sun4i_csi1_mask(csi, SUN4I_CSI1_CONFIG, 0x00400000, 0x00700000);
+
+	/* set output format: field planar yuv444 */
+	sun4i_csi1_mask(csi, SUN4I_CSI1_CONFIG, 0x000C0000, 0x000F0000);
+
+	if (csi->vsync_polarity) /* positive */
+		sun4i_csi1_mask(csi, SUN4I_CSI1_CONFIG, 0x04, 0x04);
+	else
+		sun4i_csi1_mask(csi, SUN4I_CSI1_CONFIG, 0, 0x04);
+	if (csi->hsync_polarity) /* positive */
+		sun4i_csi1_mask(csi, SUN4I_CSI1_CONFIG, 0x02, 0x02);
+	else
+		sun4i_csi1_mask(csi, SUN4I_CSI1_CONFIG, 0, 0x02);
+
+	/* PCLK is low */
+	sun4i_csi1_mask(csi, SUN4I_CSI1_CONFIG, 0, 0x01);
+
+	/* set buffer addresses */
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_A, buffer->dma_addr);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_A, buffer->dma_addr + offset);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_A, buffer->dma_addr + 2 * offset);
+
+	/* disable double buffering */
+	sun4i_csi1_write(csi, SUN4I_CSI1_BUFFER_CONTROL, 0);
+
+	/* enable interrupts: frame done */
+	sun4i_csi1_mask(csi, SUN4I_CSI1_INT_ENABLE, 0x02, 0x02);
+
+	sun4i_csi1_mask(csi, SUN4I_CSI1_HSIZE, pixel->width << 16, 0x1FFF0000);
+	sun4i_csi1_mask(csi, SUN4I_CSI1_HSIZE, csi->hdisplay_start, 0x1FFF);
+
+	sun4i_csi1_mask(csi, SUN4I_CSI1_VSIZE, pixel->height << 16, 0x1FFF0000);
+	sun4i_csi1_mask(csi, SUN4I_CSI1_VSIZE, csi->vdisplay_start, 0x1FFF);
+
+	//sun4i_csi1_mask(csi, SUN4I_CSI1_STRIDE, pixel->bytesperline, 0x1FFF);
+	sun4i_csi1_mask(csi, SUN4I_CSI1_STRIDE, pixel->width, 0x1FFF);
+
+	/* start. */
+	sun4i_csi1_mask(csi, SUN4I_CSI1_CAPTURE, 0x02, 0x02);
+
+	spin_unlock_irqrestore(csi->buffer_lock, flags);
+}
+
+static void sun4i_csi1_engine_stop(struct sun4i_csi1 *csi)
+{
+	sun4i_csi1_write_spin(csi, SUN4I_CSI1_CAPTURE, 0);
+}
+
 static int sun4i_csi1_streaming_start(struct vb2_queue *queue, unsigned int count)
 {
 	struct sun4i_csi1 *csi = vb2_get_drv_priv(queue);
@@ -524,6 +587,12 @@ static int sun4i_csi1_streaming_start(struct vb2_queue *queue, unsigned int coun
 	if (ret)
 		return ret;
 	csi->powered = true;
+
+	sun4i_registers_print(csi);
+
+	sun4i_csi1_engine_start(csi);
+
+	dev_info(csi->dev, "After engine start:\n");
 
 	sun4i_registers_print(csi);
 
@@ -561,6 +630,10 @@ static void sun4i_csi1_streaming_stop(struct vb2_queue *queue)
 	struct sun4i_csi1 *csi = vb2_get_drv_priv(queue);
 
 	dev_info(csi->dev, "%s();\n", __func__);
+
+	sun4i_csi1_engine_stop(csi);
+
+	sun4i_registers_print(csi);
 
 	sun4i_csi1_buffers_mark_done(queue);
 
