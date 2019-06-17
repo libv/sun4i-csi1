@@ -1069,8 +1069,14 @@ static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
 	 * xtotal - xsync_start = xdisplay_start
 	 * h: 800 - 656 = 144
 	 * v: 525 - 492 = 33
+	 *
+	 * hacked 1024x600:
+	 * Modeline "1024x600_60.00"   57.00  1024 1221 1319 1361  600 663 683 686 -hsync -vsync
+	 * h: 1361 - 1221: 140
+	 * v: 686 - 663: 23
+	 * Experimental values, for the tfp401: h: 61, v: 3
 	 */
-	sun4i_csi1_format_initialize(csi, 640, 480, 144, 33, true, true);
+	sun4i_csi1_format_initialize(csi, 1024, 600, 61, 3, true, true);
 
 	ret = sun4i_csi1_vb2_queue_initialize(csi);
 	if (ret)
