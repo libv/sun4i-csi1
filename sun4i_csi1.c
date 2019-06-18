@@ -287,6 +287,18 @@ static int sun4i_csi1_poweroff(struct sun4i_csi1 *csi)
 
 static irqreturn_t sun4i_csi1_isr(int irq, void *dev_id)
 {
+	struct sun4i_csi1 *csi = (struct sun4i_csi1 *) dev_id;
+	uint32_t value;
+
+	spin_lock(csi->buffer_lock);
+
+	value = sun4i_csi1_read(csi, SUN4I_CSI1_INT_STATUS);
+
+	/* ack. */
+	sun4i_csi1_write(csi, SUN4I_CSI1_INT_STATUS, value);
+
+	spin_unlock(csi->buffer_lock);
+
 	return IRQ_HANDLED;
 }
 
