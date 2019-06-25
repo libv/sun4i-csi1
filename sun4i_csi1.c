@@ -86,6 +86,11 @@ struct sun4i_csi1 {
 
 	struct sun4i_csi1_buffer *buffers[2];
 	uint64_t sequence;
+
+	struct dummy_buffer {
+		void *virtual;
+		dma_addr_t dma_addr;
+	} dummy_buffer[1];
 };
 
 #define SUN4I_CSI1_ENABLE		0X000
@@ -295,10 +300,11 @@ static void sun4i_csi1_frame_done(struct sun4i_csi1 *csi)
 {
 	struct v4l2_pix_format *pixel = &csi->v4l2_format->fmt.pix;
 	int offset = pixel->width * pixel->height;
-	struct sun4i_csi1_buffer *old, *new;
+	struct sun4i_csi1_buffer *old;
 	uint64_t sequence;
 	uint32_t dma_addr;
 	int index;
+	bool disabled;
 
 	spin_lock(csi->buffer_lock);
 
@@ -309,11 +315,23 @@ static void sun4i_csi1_frame_done(struct sun4i_csi1 *csi)
 
 	old = csi->buffers[index];
 
-	new = list_first_entry(csi->buffer_list,
-			       struct sun4i_csi1_buffer, list);
-	list_del_init(&new->list);
-	dma_addr = new->dma_addr;
-	csi->buffers[index] = new;
+	if (list_empty(csi->buffer_list)) {
+		/* disable module */
+		sun4i_csi1_mask(csi, SUN4I_CSI1_ENABLE, 0, 0x01);
+		disabled = true;
+		dma_addr = csi->dummy_buffer->dma_addr;
+		csi->buffers[index] = NULL;
+	} else {
+		struct sun4i_csi1_buffer *new =
+			list_first_entry(csi->buffer_list,
+					 struct sun4i_csi1_buffer, list);
+		list_del_init(&new->list);
+
+		dma_addr = new->dma_addr;
+		csi->buffers[index] = new;
+
+		disabled = false;
+	}
 
 	if (!index) {
 		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_A, dma_addr);
@@ -326,6 +344,10 @@ static void sun4i_csi1_frame_done(struct sun4i_csi1 *csi)
 	}
 
 	spin_unlock(csi->buffer_lock);
+
+	if (disabled)
+		dev_info(csi->dev, "%s(): engine disabled (%lluframes).\n",
+			 __func__, csi->sequence);
 
 	old->v4l2_buffer.vb2_buf.timestamp = ktime_get_ns();
 	old->v4l2_buffer.sequence = sequence;
@@ -518,6 +540,63 @@ static void sun4i_csi1_buffer_list_clear(struct sun4i_csi1 *csi)
 	}
 }
 
+/*
+ * This is a dummy area to stop our engine from overwriting at 0x00000000.
+ */
+static int sun4i_csi1_dummy_buffer_free(struct sun4i_csi1 *csi)
+{
+	void *virtual_addr = NULL;
+	dma_addr_t dma_addr = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(csi->buffer_lock, flags);
+
+	if (csi->dummy_buffer->virtual) {
+		virtual_addr = csi->dummy_buffer->virtual;
+		dma_addr = csi->dummy_buffer->dma_addr;
+		csi->dummy_buffer->virtual = NULL;
+		csi->dummy_buffer->dma_addr = 0;
+	}
+
+	spin_unlock_irqrestore(csi->buffer_lock, flags);
+
+	/* dma_free_coherent() must be called with interrupts enabled. */
+	if (virtual_addr)
+		dma_free_coherent(csi->dev,
+				  csi->v4l2_format->fmt.pix.sizeimage,
+				  virtual_addr, dma_addr);
+
+	return 0;
+}
+
+static int sun4i_csi1_dummy_buffer_alloc(struct sun4i_csi1 *csi)
+{
+	unsigned long flags;
+
+	sun4i_csi1_dummy_buffer_free(csi);
+
+	spin_lock_irqsave(csi->buffer_lock, flags);
+
+	csi->dummy_buffer->virtual =
+		dma_alloc_coherent(csi->dev,
+				   csi->v4l2_format->fmt.pix.sizeimage,
+				   &csi->dummy_buffer->dma_addr, GFP_KERNEL);
+
+	if (!csi->dummy_buffer->virtual) {
+		spin_unlock_irqrestore(csi->buffer_lock, flags);
+		dev_err(csi->dev, "%s: dma_alloc_coherent() failed.\n",
+			__func__);
+		return -ENOMEM;
+	}
+
+	spin_unlock_irqrestore(csi->buffer_lock, flags);
+
+	dev_info(csi->dev, "%s: allocated dummy buffer at 0x%X.\n",
+		 __func__, csi->dummy_buffer->dma_addr);
+
+	return 0;
+}
+
 static int sun4i_csi1_queue_setup(struct vb2_queue *queue,
 				  unsigned int *buffer_count,
 				  unsigned int *planes_count,
@@ -525,6 +604,7 @@ static int sun4i_csi1_queue_setup(struct vb2_queue *queue,
 				  struct device *alloc_devs[])
 {
 	struct sun4i_csi1 *csi = vb2_get_drv_priv(queue);
+	int ret;
 
 	if (buffer_count)
 		dev_info(csi->dev, "%s(%d);\n", __func__, *buffer_count);
@@ -541,6 +621,10 @@ static int sun4i_csi1_queue_setup(struct vb2_queue *queue,
 	sizes[0] = csi->v4l2_format->fmt.pix.sizeimage;
 
 	sun4i_csi1_buffer_list_clear(csi);
+
+	ret = sun4i_csi1_dummy_buffer_alloc(csi);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -764,6 +848,7 @@ static void sun4i_csi1_vb2_queue_free(struct sun4i_csi1 *csi)
 	struct vb2_queue *queue = csi->vb2_queue;
 
 	vb2_queue_release(queue);
+	sun4i_csi1_dummy_buffer_free(csi);
 	mutex_destroy(csi->vb2_queue_lock);
 }
 
