@@ -1075,8 +1075,14 @@ static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
 	 * h: 1361 - 1221: 140
 	 * v: 686 - 663: 23
 	 * Experimental values, for the tfp401: h: 61, v: 3
+	 *
+	 * 1920x1080:
+	 * Modeline "1920x1080_60.00"  148.50  1920 2008 2052 2200  1080 1084 1089 1125 +hsync +vsync
+	 * h: 2200 - 2008: 192
+	 * v: 1125 - 1084: 41
+	 * Experimental values, for the tfp401: h: 148, v: 36
 	 */
-	sun4i_csi1_format_initialize(csi, 1024, 600, 61, 3, true, true);
+	sun4i_csi1_format_initialize(csi, 1920, 1080, 148, 36, false, false);
 
 	ret = sun4i_csi1_vb2_queue_initialize(csi);
 	if (ret)
