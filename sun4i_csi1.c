@@ -6,7 +6,7 @@
 
 /*
  * This is the Allwinner CMOS sensor interface, for the secondary interface,
- * which should allow for full 24bit RGB input.
+ * which allows for full 24bit input at at least 148.5MHz (1080p).
  *
  * We are using this for the FOSDEM Video teams HDMI input board.
  *
@@ -14,6 +14,13 @@
  * first approximation has us receive raw pixelbus data from a tfp401 module,
  * so we need no interaction with an i2c module and are free to bring this
  * trivial hw, with non-trivial v4l2 plumbing, without outside influence.
+ *
+ * Sadly, the supported 24bit format is planar only, so our current input is
+ * planar RGB which no-one else does, ever. Our display engine supports it,
+ * but the 2d mixer does not, and we need the latter for further conversion
+ * to a format that our h264 encoder accepts. Therefore, we will currently
+ * claim to be planar YUV444, and later on have the adv7611 do colour space
+ * conversion (from RGB to YUV) for us.
  */
 #include <linux/module.h>
 #include <linux/of_device.h>
@@ -36,7 +43,7 @@
 struct sun4i_csi1_buffer {
 	struct vb2_v4l2_buffer v4l2_buffer;
 	struct list_head list;
-	dma_addr_t dma_addr;
+	dma_addr_t dma_addr[3];
 };
 
 struct sun4i_csi1 {
@@ -53,6 +60,15 @@ struct sun4i_csi1 {
 
 	struct v4l2_device v4l2_dev[1];
 	struct v4l2_format v4l2_format[1];
+	struct vb2_queue vb2_queue[1];
+	struct mutex vb2_queue_lock[1];
+	struct video_device slashdev[1];
+
+	/* Ease our format suffering by tracking these separately. */
+	int plane_count;
+	size_t plane_size;
+	int width;
+	int height;
 
 	/*
 	 * We need these values as allwinners CSI does not take in DE, and
@@ -71,11 +87,6 @@ struct sun4i_csi1 {
 	bool hsync_polarity;
 	bool vsync_polarity;
 
-	struct vb2_queue vb2_queue[1];
-	struct mutex vb2_queue_lock[1];
-
-	struct video_device slashdev[1];
-
 	/*
 	 * This is both a lock on the buffer list, and on the registers,
 	 * as playing with buffers invariably means updating at least
@@ -88,8 +99,8 @@ struct sun4i_csi1 {
 	uint64_t sequence;
 
 	struct dummy_buffer {
-		void *virtual;
-		dma_addr_t dma_addr;
+		void *virtual[3];
+		dma_addr_t dma_addr[3];
 	} dummy_buffer[1];
 };
 
@@ -298,11 +309,9 @@ static int sun4i_csi1_poweroff(struct sun4i_csi1 *csi)
  */
 static void sun4i_csi1_frame_done(struct sun4i_csi1 *csi)
 {
-	struct v4l2_pix_format *pixel = &csi->v4l2_format->fmt.pix;
-	int offset = pixel->width * pixel->height;
 	struct sun4i_csi1_buffer *old;
 	uint64_t sequence;
-	uint32_t dma_addr;
+	dma_addr_t *dma_addr;
 	int index;
 	bool disabled;
 
@@ -334,13 +343,13 @@ static void sun4i_csi1_frame_done(struct sun4i_csi1 *csi)
 	}
 
 	if (!index) {
-		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_A, dma_addr);
-		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_A, dma_addr + offset);
-		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_A, dma_addr + 2 * offset);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_A, dma_addr[0]);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_A, dma_addr[1]);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_A, dma_addr[2]);
 	} else {
-		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_B, dma_addr);
-		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_B, dma_addr + offset);
-		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_B, dma_addr + 2 * offset);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_B, dma_addr[0]);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_B, dma_addr[1]);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_B, dma_addr[2]);
 	}
 
 	spin_unlock(csi->buffer_lock);
@@ -472,7 +481,7 @@ static const struct dev_pm_ops sun4i_csi1_pm_ops = {
 };
 
 /*
- * We currently only care about 24bit RGB.
+ * We currently only care about 24bit YUV444.
  */
 static void sun4i_csi1_format_initialize(struct sun4i_csi1 *csi,
 					 int width, int height,
@@ -481,28 +490,46 @@ static void sun4i_csi1_format_initialize(struct sun4i_csi1 *csi,
 					 bool hsync_polarity,
 					 bool vsync_polarity)
 {
-	struct v4l2_pix_format *pixel = &csi->v4l2_format->fmt.pix;
+	struct v4l2_pix_format_mplane *pixel =
+		&csi->v4l2_format->fmt.pix_mp;
+	int i;
 
-	csi->v4l2_format->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	csi->plane_count = 3;
+	csi->plane_size = width * height;
 
-	pixel->pixelformat = V4L2_PIX_FMT_RGB24;
-
-	pixel->width = width;
-	pixel->height = height;
-
-	pixel->bytesperline = pixel->width * 3;
-	pixel->sizeimage = pixel->bytesperline * pixel->height;
-
-	pixel->field = V4L2_FIELD_NONE;
-
-	pixel->colorspace = V4L2_COLORSPACE_RAW;
-	pixel->quantization = V4L2_QUANTIZATION_DEFAULT;
-	pixel->xfer_func = V4L2_XFER_FUNC_NONE;
+	csi->width = width;
+	csi->height = height;
 
 	csi->hdisplay_start = hdisplay_start;
 	csi->vdisplay_start = vdisplay_start;
 	csi->hsync_polarity = hsync_polarity;
 	csi->vsync_polarity = vsync_polarity;
+
+	memset(pixel, 0, sizeof(struct v4l2_pix_format_mplane));
+
+	csi->v4l2_format->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+
+	pixel->width = width;
+	pixel->height = height;
+
+	pixel->pixelformat = V4L2_PIX_FMT_YUV444M;
+
+	pixel->field = V4L2_FIELD_NONE;
+
+	pixel->colorspace = V4L2_COLORSPACE_RAW;
+
+	pixel->num_planes = csi->plane_count;
+	for (i = 0; i < csi->plane_count; i++) {
+		struct v4l2_plane_pix_format *plane =
+			&pixel->plane_fmt[i];
+
+		plane->sizeimage = csi->plane_size;
+		plane->bytesperline = width;
+	}
+
+	pixel->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
+	pixel->quantization = V4L2_QUANTIZATION_DEFAULT;
+	pixel->xfer_func = V4L2_XFER_FUNC_NONE;
 }
 
 /*
@@ -545,54 +572,65 @@ static void sun4i_csi1_buffer_list_clear(struct sun4i_csi1 *csi)
  */
 static int sun4i_csi1_dummy_buffer_free(struct sun4i_csi1 *csi)
 {
-	void *virtual_addr = NULL;
-	dma_addr_t dma_addr = 0;
+	struct dummy_buffer *dummy = csi->dummy_buffer;
+	void *virtual_addr[3] = { NULL };
+	dma_addr_t dma_addr[3] = { 0 };
 	unsigned long flags;
+	int i;
 
 	spin_lock_irqsave(csi->buffer_lock, flags);
 
-	if (csi->dummy_buffer->virtual) {
-		virtual_addr = csi->dummy_buffer->virtual;
-		dma_addr = csi->dummy_buffer->dma_addr;
-		csi->dummy_buffer->virtual = NULL;
-		csi->dummy_buffer->dma_addr = 0;
-	}
+	for (i = 0; i < csi->plane_count; i++)
+		if (dummy->virtual[i]) {
+			virtual_addr[i] = dummy->virtual[i];
+			dma_addr[i] = dummy->dma_addr[i];
+			dummy->virtual[i] = NULL;
+			dummy->dma_addr[i] = 0;
+		}
 
 	spin_unlock_irqrestore(csi->buffer_lock, flags);
 
 	/* dma_free_coherent() must be called with interrupts enabled. */
-	if (virtual_addr)
-		dma_free_coherent(csi->dev,
-				  csi->v4l2_format->fmt.pix.sizeimage,
-				  virtual_addr, dma_addr);
+	for (i = 0; i < csi->plane_count; i++)
+		if (virtual_addr[i])
+			dma_free_coherent(csi->dev, csi->plane_size,
+					  virtual_addr[i], dma_addr[i]);
 
 	return 0;
 }
 
 static int sun4i_csi1_dummy_buffer_alloc(struct sun4i_csi1 *csi)
 {
+	struct dummy_buffer *dummy = csi->dummy_buffer;
 	unsigned long flags;
+	int i;
 
 	sun4i_csi1_dummy_buffer_free(csi);
 
 	spin_lock_irqsave(csi->buffer_lock, flags);
 
-	csi->dummy_buffer->virtual =
-		dma_alloc_coherent(csi->dev,
-				   csi->v4l2_format->fmt.pix.sizeimage,
-				   &csi->dummy_buffer->dma_addr, GFP_KERNEL);
+	for (i = 0; i < csi->plane_count; i++) {
+		dummy->virtual[i] = dma_alloc_coherent(csi->dev,
+						       csi->plane_size,
+						       &dummy->dma_addr[i],
+						       GFP_KERNEL);
+		if (!dummy->virtual[i])
+			break;
+	}
 
-	if (!csi->dummy_buffer->virtual) {
+	if (i != csi->plane_count) {
 		spin_unlock_irqrestore(csi->buffer_lock, flags);
 		dev_err(csi->dev, "%s: dma_alloc_coherent() failed.\n",
 			__func__);
+		sun4i_csi1_dummy_buffer_free(csi);
 		return -ENOMEM;
 	}
 
 	spin_unlock_irqrestore(csi->buffer_lock, flags);
 
-	dev_info(csi->dev, "%s: allocated dummy buffer at 0x%X.\n",
-		 __func__, csi->dummy_buffer->dma_addr);
+	for (i = 0; i < csi->plane_count; i++)
+		dev_info(csi->dev, "%s: allocated dummy buffer[%d] at 0x%X.\n",
+			 __func__, i, dummy->dma_addr[i]);
 
 	return 0;
 }
@@ -604,21 +642,16 @@ static int sun4i_csi1_queue_setup(struct vb2_queue *queue,
 				  struct device *alloc_devs[])
 {
 	struct sun4i_csi1 *csi = vb2_get_drv_priv(queue);
-	int ret;
+	int ret, i;
 
 	if (buffer_count)
 		dev_info(csi->dev, "%s(%d);\n", __func__, *buffer_count);
 	else
 		dev_info(csi->dev, "%s();\n", __func__);
 
-	if (*planes_count) {
-		dev_err(csi->dev, "%s: invalid planes_count pointer.\n",
-			__func__);
-		return -EINVAL;
-	}
-
-	*planes_count = 1;
-	sizes[0] = csi->v4l2_format->fmt.pix.sizeimage;
+	*planes_count = csi->plane_count;
+	for (i = 0; i < csi->plane_count; i++)
+		sizes[i] = csi->plane_size;
 
 	sun4i_csi1_buffer_list_clear(csi);
 
@@ -636,13 +669,17 @@ static int sun4i_csi1_buffer_prepare(struct vb2_buffer *vb2_buffer)
 	struct sun4i_csi1_buffer *buffer =
 		container_of(v4l2_buffer, struct sun4i_csi1_buffer,
 			     v4l2_buffer);
+	int i;
 
-	vb2_set_plane_payload(vb2_buffer, 0,
-			      csi->v4l2_format->fmt.pix.sizeimage);
+	for (i = 0; i < csi->plane_count; i++)
+		vb2_set_plane_payload(vb2_buffer, i, csi->plane_size);
 
 	/* make very sure that this is properly initialized */
 	INIT_LIST_HEAD(&buffer->list);
-	buffer->dma_addr = vb2_dma_contig_plane_dma_addr(vb2_buffer, 0);
+
+	for (i = 0; i < csi->plane_count; i++)
+		buffer->dma_addr[i] =
+			vb2_dma_contig_plane_dma_addr(vb2_buffer, i);
 
 	return 0;
 }
@@ -663,8 +700,6 @@ static void sun4i_csi1_buffer_queue(struct vb2_buffer *vb2_buffer)
 
 static void sun4i_csi1_engine_start(struct sun4i_csi1 *csi)
 {
-	struct v4l2_pix_format *pixel = &csi->v4l2_format->fmt.pix;
-	int offset = pixel->width * pixel->height;
 	unsigned long flags;
 
 	spin_lock_irqsave(csi->buffer_lock, flags);
@@ -697,13 +732,19 @@ static void sun4i_csi1_engine_start(struct sun4i_csi1 *csi)
 	sun4i_csi1_mask(csi, SUN4I_CSI1_CONFIG, 0, 0x01);
 
 	/* set buffer addresses */
-	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_A, csi->buffers[0]->dma_addr);
-	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_A, csi->buffers[0]->dma_addr + offset);
-	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_A, csi->buffers[0]->dma_addr + 2 * offset);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_A,
+			 csi->buffers[0]->dma_addr[0]);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_A,
+			 csi->buffers[0]->dma_addr[1]);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_A,
+			 csi->buffers[0]->dma_addr[2]);
 
-	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_B, csi->buffers[1]->dma_addr);
-	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_B, csi->buffers[1]->dma_addr + offset);
-	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_B, csi->buffers[1]->dma_addr + 2 * offset);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_B,
+			 csi->buffers[1]->dma_addr[0]);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_B,
+			 csi->buffers[1]->dma_addr[1]);
+	sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_B,
+			 csi->buffers[1]->dma_addr[2]);
 
 	/* enable double buffering, and select buffer A first */
 	sun4i_csi1_write(csi, SUN4I_CSI1_BUFFER_CONTROL, 0x01);
@@ -711,14 +752,13 @@ static void sun4i_csi1_engine_start(struct sun4i_csi1 *csi)
 	/* enable interrupts: frame done */
 	sun4i_csi1_mask(csi, SUN4I_CSI1_INT_ENABLE, 0x02, 0x02);
 
-	sun4i_csi1_mask(csi, SUN4I_CSI1_HSIZE, pixel->width << 16, 0x1FFF0000);
+	sun4i_csi1_mask(csi, SUN4I_CSI1_HSIZE, csi->width << 16, 0x1FFF0000);
 	sun4i_csi1_mask(csi, SUN4I_CSI1_HSIZE, csi->hdisplay_start, 0x1FFF);
 
-	sun4i_csi1_mask(csi, SUN4I_CSI1_VSIZE, pixel->height << 16, 0x1FFF0000);
+	sun4i_csi1_mask(csi, SUN4I_CSI1_VSIZE, csi->height << 16, 0x1FFF0000);
 	sun4i_csi1_mask(csi, SUN4I_CSI1_VSIZE, csi->vdisplay_start, 0x1FFF);
 
-	//sun4i_csi1_mask(csi, SUN4I_CSI1_STRIDE, pixel->bytesperline, 0x1FFF);
-	sun4i_csi1_mask(csi, SUN4I_CSI1_STRIDE, pixel->width, 0x1FFF);
+	sun4i_csi1_mask(csi, SUN4I_CSI1_STRIDE, csi->width, 0x1FFF);
 
 	/* start. */
 	sun4i_csi1_mask(csi, SUN4I_CSI1_CAPTURE, 0x02, 0x02);
@@ -816,7 +856,7 @@ static int sun4i_csi1_vb2_queue_initialize(struct sun4i_csi1 *csi)
 	queue->drv_priv = csi;
 	queue->dev = csi->dev;
 
-	queue->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	queue->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 	queue->io_modes = VB2_MMAP | VB2_DMABUF;
 	queue->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 
@@ -905,24 +945,34 @@ static int sun4i_csi1_ioctl_format_get(struct file *file, void *handle,
 	return 0;
 }
 
-static int sun4i_csi1_format_test(struct v4l2_format *old,
-				  struct v4l2_format *new)
+static int sun4i_csi1_format_test(struct sun4i_csi1 *csi,
+				  struct v4l2_format *format_new)
 {
-	struct v4l2_pix_format *pixel_old = &old->fmt.pix;
-	struct v4l2_pix_format *pixel_new = &new->fmt.pix;
+	struct v4l2_pix_format_mplane *old = &csi->v4l2_format->fmt.pix_mp;
+	struct v4l2_pix_format_mplane *new = &format_new->fmt.pix_mp;
+	int i;
 
-	if (old->type != new->type)
+	if (csi->v4l2_format->type != format_new->type)
 		return -EINVAL;
 
-	if ((pixel_old->pixelformat != pixel_new->pixelformat) ||
-	    (pixel_old->width != pixel_new->width) ||
-	    (pixel_old->height != pixel_new->height) ||
-	    (pixel_old->bytesperline != pixel_new->bytesperline) ||
-	    (pixel_old->sizeimage != pixel_new->sizeimage) ||
-	    (pixel_old->field != pixel_new->field) ||
-	    (pixel_old->colorspace != pixel_new->colorspace) ||
-	    (pixel_old->quantization != pixel_new->quantization) ||
-	    (pixel_old->xfer_func != pixel_new->xfer_func))
+	if ((csi->width != new->width) ||
+	    (csi->height != new->height) ||
+	    (csi->plane_count != new->num_planes))
+		return -EINVAL;
+
+	for (i = 0; i < csi->plane_count; i++) {
+		struct v4l2_plane_pix_format *plane = &new->plane_fmt[i];
+
+		if ((csi->width != plane->bytesperline) ||
+		    (csi->plane_size != plane->sizeimage))
+			return -EINVAL;
+	}
+
+	if ((old->pixelformat != new->pixelformat) ||
+	    (old->field != new->field) ||
+	    (old->colorspace != new->colorspace) ||
+	    (old->quantization != new->quantization) ||
+	    (old->xfer_func != new->xfer_func))
 		return -EINVAL;
 
 	return 0;
@@ -935,7 +985,7 @@ static int sun4i_csi1_ioctl_format_set(struct file *file, void *handle,
 
 	dev_info(csi->dev, "%s();\n", __func__);
 
-	return sun4i_csi1_format_test(csi->v4l2_format, format);
+	return sun4i_csi1_format_test(csi, format);
 }
 
 static int sun4i_csi1_ioctl_format_try(struct file *file, void *handle,
@@ -945,7 +995,7 @@ static int sun4i_csi1_ioctl_format_try(struct file *file, void *handle,
 
 	dev_info(csi->dev, "%s();\n", __func__);
 
-	return sun4i_csi1_format_test(csi->v4l2_format, format);
+	return sun4i_csi1_format_test(csi, format);
 }
 
 static int sun4i_csi1_ioctl_input_enumerate(struct file *file, void *handle,
@@ -991,10 +1041,10 @@ static int sun4i_csi1_ioctl_input_get(struct file *file, void *handle,
 
 static const struct v4l2_ioctl_ops sun4i_csi1_ioctl_ops = {
 	.vidioc_querycap = sun4i_csi1_ioctl_capability_query,
-	.vidioc_enum_fmt_vid_cap = sun4i_csi1_ioctl_format_enumerate,
-	.vidioc_g_fmt_vid_cap = sun4i_csi1_ioctl_format_get,
-	.vidioc_s_fmt_vid_cap = sun4i_csi1_ioctl_format_set,
-	.vidioc_try_fmt_vid_cap = sun4i_csi1_ioctl_format_try,
+	.vidioc_enum_fmt_vid_cap_mplane = sun4i_csi1_ioctl_format_enumerate,
+	.vidioc_g_fmt_vid_cap_mplane = sun4i_csi1_ioctl_format_get,
+	.vidioc_s_fmt_vid_cap_mplane = sun4i_csi1_ioctl_format_set,
+	.vidioc_try_fmt_vid_cap_mplane = sun4i_csi1_ioctl_format_try,
 
 	.vidioc_enum_input = sun4i_csi1_ioctl_input_enumerate,
 	.vidioc_s_input = sun4i_csi1_ioctl_input_set,
@@ -1025,7 +1075,7 @@ static int sun4i_csi1_slashdev_initialize(struct sun4i_csi1 *csi)
 
 	slashdev->vfl_type = VFL_TYPE_GRABBER;
 	slashdev->vfl_dir = VFL_DIR_RX;
-	slashdev->device_caps = V4L2_CAP_STREAMING | V4L2_CAP_VIDEO_CAPTURE;
+	slashdev->device_caps = V4L2_CAP_STREAMING | V4L2_CAP_VIDEO_CAPTURE_MPLANE;
 
 	slashdev->v4l2_dev = csi->v4l2_dev;
 	slashdev->queue = csi->vb2_queue;
