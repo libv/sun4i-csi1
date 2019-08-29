@@ -1233,10 +1233,18 @@ static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
 	 * h: 2200 - 2008: 192
 	 * v: 1125 - 1084: 41
 	 * Experimental values, for the tfp401: h: 148, v: 36
+	 *
+	 * 1280x720, the standard modeline is:
+	 *  ModeLine "1280x720_60.00"	74.25	1280 1390 1430 1650  720 725 730 750 +hSync +vSync
+	 * But the tfp401 accepts:
+	 *  ModeLine "1280x720_60.00"	74.5    1280 1390 1430 1652  720 725 730 752 +hSync +vSync
+	 * h: 1650 - 1390: 260
+	 * v: 750 - 725: 25
+	 *  Experimental values, for the tfp401: h: 216, v: 22
 	 */
-	sun4i_csi1_format_initialize(csi, 1920, 1080, false, false);
+	sun4i_csi1_format_initialize(csi, 1280, 720, false, false);
 
-	ret =  sun4i_csi1_ctrl_handler_initialize(csi, 148, 36);
+	ret =  sun4i_csi1_ctrl_handler_initialize(csi, 216, 22);
 	if (ret)
 		goto error;
 
