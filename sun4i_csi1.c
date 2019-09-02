@@ -488,18 +488,20 @@ static int sun4i_csi1_ctrl_set(struct v4l2_ctrl *ctrl)
 {
 	struct sun4i_csi1 *csi = (struct sun4i_csi1 *) ctrl->priv;
 
+	dev_info(csi->dev, "%s(%s);\n", __func__, ctrl->name);
+
 	switch (ctrl->id) {
 	case SUN4I_CSI1_HDISPLAY_START:
 		csi->hdisplay_start = ctrl->val;
 		if (csi->powered)
-			sun4i_csi1_mask(csi, SUN4I_CSI1_HSIZE,
-					ctrl->val, 0x1FFF);
+			sun4i_csi1_mask_spin(csi, SUN4I_CSI1_HSIZE,
+					     ctrl->val, 0x1FFF);
 		return 0;
 	case SUN4I_CSI1_VDISPLAY_START:
 		csi->vdisplay_start = ctrl->val;
 		if (csi->powered)
-			sun4i_csi1_mask(csi, SUN4I_CSI1_VSIZE,
-					ctrl->val, 0x1FFF);
+			sun4i_csi1_mask_spin(csi, SUN4I_CSI1_VSIZE,
+					     ctrl->val, 0x1FFF);
 		return 0;
 	default:
 		return -EINVAL;
@@ -510,22 +512,22 @@ static const struct v4l2_ctrl_ops sun4i_csi1_ctrl_ops = {
 	.s_ctrl = sun4i_csi1_ctrl_set,
 };
 
-static const struct v4l2_ctrl_config sun4i_csi1_ctrl_hdisplay_start = {
+static struct v4l2_ctrl_config sun4i_csi1_ctrl_hdisplay_start = {
 	.ops = &sun4i_csi1_ctrl_ops,
 	.id = SUN4I_CSI1_HDISPLAY_START,
 	.name = "HDisplay Start",
-	.type = V4L2_CTRL_TYPE_U32,
+	.type = V4L2_CTRL_TYPE_INTEGER,
 	.flags = V4L2_CTRL_FLAG_SLIDER,
 	.min = 0,
 	.max = 0x1FFF,
 	.step = 1,
 };
 
-static const struct v4l2_ctrl_config sun4i_csi1_ctrl_vdisplay_start = {
+static struct v4l2_ctrl_config sun4i_csi1_ctrl_vdisplay_start = {
 	.ops = &sun4i_csi1_ctrl_ops,
 	.id = SUN4I_CSI1_VDISPLAY_START,
 	.name = "VDisplay Start",
-	.type = V4L2_CTRL_TYPE_U32,
+	.type = V4L2_CTRL_TYPE_INTEGER,
 	.flags = V4L2_CTRL_FLAG_SLIDER,
 	.min = 0,
 	.max = 0x1FFF,
@@ -552,6 +554,7 @@ static int sun4i_csi1_ctrl_handler_initialize(struct sun4i_csi1 *csi,
 		return ret;
 	}
 
+	sun4i_csi1_ctrl_hdisplay_start.def = hdisplay_start;
 	ctrl = v4l2_ctrl_new_custom(handler, &sun4i_csi1_ctrl_hdisplay_start,
 				    csi);
 	if (!ctrl) {
@@ -561,6 +564,7 @@ static int sun4i_csi1_ctrl_handler_initialize(struct sun4i_csi1 *csi,
 		goto error;
 	}
 
+	sun4i_csi1_ctrl_vdisplay_start.def = vdisplay_start;
 	ctrl = v4l2_ctrl_new_custom(handler, &sun4i_csi1_ctrl_vdisplay_start,
 				    csi);
 	if (!ctrl) {
