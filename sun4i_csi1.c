@@ -63,6 +63,7 @@ struct sun4i_csi1 {
 	struct vb2_queue vb2_queue[1];
 	struct mutex vb2_queue_lock[1];
 	struct video_device slashdev[1];
+	struct v4l2_ctrl_handler v4l2_ctrl_handler[1];
 
 	/* Ease our format suffering by tracking these separately. */
 	int plane_count;
@@ -480,13 +481,112 @@ static const struct dev_pm_ops sun4i_csi1_pm_ops = {
 	SET_RUNTIME_PM_OPS(sun4i_csi1_suspend, sun4i_csi1_resume, NULL)
 };
 
+#define SUN4I_CSI1_HDISPLAY_START (V4L2_CID_USER_BASE + 0xC000 + 1)
+#define SUN4I_CSI1_VDISPLAY_START (V4L2_CID_USER_BASE + 0xC000 + 2)
+
+static int sun4i_csi1_ctrl_set(struct v4l2_ctrl *ctrl)
+{
+	struct sun4i_csi1 *csi = (struct sun4i_csi1 *) ctrl->priv;
+
+	switch (ctrl->id) {
+	case SUN4I_CSI1_HDISPLAY_START:
+		csi->hdisplay_start = ctrl->val;
+		if (csi->powered)
+			sun4i_csi1_mask(csi, SUN4I_CSI1_HSIZE,
+					ctrl->val, 0x1FFF);
+		return 0;
+	case SUN4I_CSI1_VDISPLAY_START:
+		csi->vdisplay_start = ctrl->val;
+		if (csi->powered)
+			sun4i_csi1_mask(csi, SUN4I_CSI1_VSIZE,
+					ctrl->val, 0x1FFF);
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static const struct v4l2_ctrl_ops sun4i_csi1_ctrl_ops = {
+	.s_ctrl = sun4i_csi1_ctrl_set,
+};
+
+static const struct v4l2_ctrl_config sun4i_csi1_ctrl_hdisplay_start = {
+	.ops = &sun4i_csi1_ctrl_ops,
+	.id = SUN4I_CSI1_HDISPLAY_START,
+	.name = "HDisplay Start",
+	.type = V4L2_CTRL_TYPE_U32,
+	.flags = V4L2_CTRL_FLAG_SLIDER,
+	.min = 0,
+	.max = 0x1FFF,
+	.step = 1,
+};
+
+static const struct v4l2_ctrl_config sun4i_csi1_ctrl_vdisplay_start = {
+	.ops = &sun4i_csi1_ctrl_ops,
+	.id = SUN4I_CSI1_VDISPLAY_START,
+	.name = "VDisplay Start",
+	.type = V4L2_CTRL_TYPE_U32,
+	.flags = V4L2_CTRL_FLAG_SLIDER,
+	.min = 0,
+	.max = 0x1FFF,
+	.step = 1,
+};
+
+static void sun4i_csi1_ctrl_handler_free(struct sun4i_csi1 *csi)
+{
+	v4l2_ctrl_handler_free(csi->v4l2_ctrl_handler);
+}
+
+static int sun4i_csi1_ctrl_handler_initialize(struct sun4i_csi1 *csi,
+					      int hdisplay_start,
+					      int vdisplay_start)
+{
+	struct v4l2_ctrl_handler *handler = csi->v4l2_ctrl_handler;
+	struct v4l2_ctrl *ctrl;
+	int ret;
+
+	ret = v4l2_ctrl_handler_init(handler, 2);
+	if (ret) {
+		dev_err(csi->dev, "%s: v4l2_ctrl_handler_init() failed: %d\n",
+			__func__, ret);
+		return ret;
+	}
+
+	ctrl = v4l2_ctrl_new_custom(handler, &sun4i_csi1_ctrl_hdisplay_start,
+				    csi);
+	if (!ctrl) {
+		dev_err(csi->dev, "%s: v4l2_ctrl_new_custom(hdisplay_start) "
+			"failed: %d\n", __func__, handler->error);
+		ret = handler->error;
+		goto error;
+	}
+
+	ctrl = v4l2_ctrl_new_custom(handler, &sun4i_csi1_ctrl_vdisplay_start,
+				    csi);
+	if (!ctrl) {
+		dev_err(csi->dev, "%s: v4l2_ctrl_new_custom(vdisplay_start) "
+			"failed: %d\n", __func__, handler->error);
+		ret = handler->error;
+		goto error;
+	}
+
+	csi->v4l2_dev->ctrl_handler = handler;
+
+	csi->hdisplay_start = hdisplay_start;
+	csi->vdisplay_start = vdisplay_start;
+
+	return 0;
+
+ error:
+	v4l2_ctrl_handler_free(handler);
+	return ret;
+}
+
 /*
  * We currently only care about 24bit YUV444.
  */
 static void sun4i_csi1_format_initialize(struct sun4i_csi1 *csi,
 					 int width, int height,
-					 int hdisplay_start,
-					 int vdisplay_start,
 					 bool hsync_polarity,
 					 bool vsync_polarity)
 {
@@ -500,8 +600,6 @@ static void sun4i_csi1_format_initialize(struct sun4i_csi1 *csi,
 	csi->width = width;
 	csi->height = height;
 
-	csi->hdisplay_start = hdisplay_start;
-	csi->vdisplay_start = vdisplay_start;
 	csi->hsync_polarity = hsync_polarity;
 	csi->vsync_polarity = vsync_polarity;
 
@@ -1132,7 +1230,11 @@ static int sun4i_csi1_v4l2_initialize(struct sun4i_csi1 *csi)
 	 * v: 1125 - 1084: 41
 	 * Experimental values, for the tfp401: h: 148, v: 36
 	 */
-	sun4i_csi1_format_initialize(csi, 1920, 1080, 148, 36, false, false);
+	sun4i_csi1_format_initialize(csi, 1920, 1080, false, false);
+
+	ret =  sun4i_csi1_ctrl_handler_initialize(csi, 148, 36);
+	if (ret)
+		goto error;
 
 	ret = sun4i_csi1_vb2_queue_initialize(csi);
 	if (ret)
@@ -1154,6 +1256,7 @@ static int sun4i_csi1_v4l2_cleanup(struct sun4i_csi1 *csi)
 {
 	sun4i_csi1_slashdev_free(csi);
 	sun4i_csi1_vb2_queue_free(csi);
+	sun4i_csi1_ctrl_handler_free(csi);
 	v4l2_device_unregister(csi->v4l2_dev);
 
 	return 0;
