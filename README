@@ -1,0 +1,16 @@
+Standalone version of libv's sunxi A20 CSI1 driver.
+
+Development of a standalone version was started as it was impossible
+to verify the CSI0 functionality of the sunxi csi driver. Even though a 
+banana Pi, and the suitable ov5640 camera module were available, this did 
+not work out of the box, and the necessary changes needed to make the 
+ov5640 work were not public. Why was such code accepted in the kernel?
+
+After spending several weeks with it, dealing with several issues, both on 
+the camera side as on the csi side, i gave up and brought up this driver 
+from scratch. In the end, I spent less time on this driver than i did on 
+trying to make the existing driver work with the other capture 
+interface and the OV5640 camera interface.
+
+This tree now moves the driver out of the kernel tree, to ease 
+development, and to no longer clash with upstream changes as often.
