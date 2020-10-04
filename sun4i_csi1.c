@@ -1143,7 +1143,7 @@ static int sun4i_csi1_ioctl_input_get(struct file *file, void *handle,
 
 static const struct v4l2_ioctl_ops sun4i_csi1_ioctl_ops = {
 	.vidioc_querycap = sun4i_csi1_ioctl_capability_query,
-	.vidioc_enum_fmt_vid_cap_mplane = sun4i_csi1_ioctl_format_enumerate,
+	.vidioc_enum_fmt_vid_cap = sun4i_csi1_ioctl_format_enumerate,
 	.vidioc_g_fmt_vid_cap_mplane = sun4i_csi1_ioctl_format_get,
 	.vidioc_s_fmt_vid_cap_mplane = sun4i_csi1_ioctl_format_set,
 	.vidioc_try_fmt_vid_cap_mplane = sun4i_csi1_ioctl_format_try,
