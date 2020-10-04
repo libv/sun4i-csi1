@@ -1175,7 +1175,7 @@ static int sun4i_csi1_slashdev_initialize(struct sun4i_csi1 *csi)
 	video_set_drvdata(slashdev, csi);
 	strscpy(slashdev->name, KBUILD_MODNAME, sizeof(slashdev->name));
 
-	slashdev->vfl_type = VFL_TYPE_GRABBER;
+	slashdev->vfl_type = VFL_TYPE_VIDEO;
 	slashdev->vfl_dir = VFL_DIR_RX;
 	slashdev->device_caps = V4L2_CAP_STREAMING | V4L2_CAP_VIDEO_CAPTURE_MPLANE;
 
@@ -1187,7 +1187,7 @@ static int sun4i_csi1_slashdev_initialize(struct sun4i_csi1 *csi)
 	slashdev->fops = &sun4i_csi1_slashdev_fops;
 	slashdev->ioctl_ops = &sun4i_csi1_ioctl_ops;
 
-	ret = video_register_device(slashdev, VFL_TYPE_GRABBER, -1);
+	ret = video_register_device(slashdev, VFL_TYPE_VIDEO, -1);
 	if (ret) {
 		dev_err(csi->dev, "%s(): video_register_device failed: %d\n",
 			__func__, ret);
