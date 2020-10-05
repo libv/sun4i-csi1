@@ -50,7 +50,6 @@ struct sun4i_csi1 {
 	struct device *dev;
 
 	struct clk *clk_bus;
-	struct clk *clk_module;
 	struct clk *clk_ram;
 	struct reset_control *reset;
 
@@ -258,21 +257,11 @@ static int sun4i_csi1_poweron(struct sun4i_csi1 *csi)
 		goto err_ram;
 	}
 
-	clk_set_rate(csi->clk_module, 24000000);
-	ret = clk_prepare_enable(csi->clk_module);
-	if (ret) {
-		dev_err(dev, "%s(): clk_prepare_enable(module) failed: %d.\n",
-			__func__, ret);
-		goto err_module;
-	}
-
 	/* enable module */
 	sun4i_csi1_mask_spin(csi, SUN4I_CSI1_ENABLE, 0x01, 0x01);
 
 	return 0;
 
- err_module:
-	clk_disable_unprepare(csi->clk_ram);
  err_ram:
 	clk_disable_unprepare(csi->clk_bus);
  err_bus:
@@ -293,8 +282,6 @@ static int sun4i_csi1_poweroff(struct sun4i_csi1 *csi)
 
 	/* reset and disable module */
 	sun4i_csi1_mask_spin(csi, SUN4I_CSI1_ENABLE, 0, 0x01);
-
-	clk_disable_unprepare(csi->clk_module);
 
 	clk_disable_unprepare(csi->clk_ram);
 
@@ -396,13 +383,6 @@ static int sun4i_csi1_resources_get(struct sun4i_csi1 *csi,
 		dev_err(dev, "%s(): devm_clk_get(bus) failed: %ld.\n",
 			__func__, PTR_ERR(csi->clk_bus));
 		return PTR_ERR(csi->clk_bus);
-	}
-
-	csi->clk_module = devm_clk_get(dev, "mod");
-	if (IS_ERR(csi->clk_module)) {
-		dev_err(dev, "%s(): devm_clk_get(module) failed: %ld.\n",
-			__func__, PTR_ERR(csi->clk_module));
-		return PTR_ERR(csi->clk_module);
 	}
 
 	csi->clk_ram = devm_clk_get(dev, "ram");
