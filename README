@@ -14,3 +14,25 @@ interface and the OV5640 camera interface.
 
 This tree now moves the driver out of the kernel tree, to ease 
 development, and to no longer clash with upstream changes as often.
+
+Building:
+---------
+
+make -C /home/libv/fosdem/video/kernel/ ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j4 M=$PWD
+
+Installing:
+-----------
+scp sun4i_csi1.ko root@juggler:/lib/modules/5.9.0-rc8-00055-g7a4e6a9-dirty/kernel/drivers/media/platform/sunxi/sun4i-csi/
+
+You might need to run 'depmod -a' when the new kernel is being run.
+
+Disabling existing modules:
+---------------------------
+
+Add the following to /etc/modprobe.d/blacklist.conf
+
+blacklist sunxi_cedrus
+blacklist lima
+blacklist sun4i_csi
+
+We do not need this for now, so disable them for now.
