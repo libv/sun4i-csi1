@@ -60,6 +60,7 @@ struct sun4i_csi1 {
 	int irq_csi;
 
 	bool powered;
+	bool active; /* protect with buffer_lock */
 
 	struct v4l2_device v4l2_dev[1];
 	struct v4l2_format v4l2_format[1];
@@ -355,6 +356,56 @@ static void sun4i_csi1_frame_done(struct sun4i_csi1 *csi)
 	vb2_buffer_done(&old->v4l2_buffer.vb2_buf, VB2_BUF_STATE_DONE);
 }
 
+/*
+ * Called from active ISR.
+ */
+static void sun4i_csi1_stream_ends(struct sun4i_csi1 *csi)
+{
+	struct sun4i_csi1_buffer *old = NULL;
+	uint64_t sequence = -1;
+
+	spin_lock(csi->buffer_lock);
+
+	if (csi->active) {
+		dma_addr_t *dma_addr;
+		int index;
+
+		sequence = csi->sequence;
+		csi->sequence = -1;
+
+		index = sequence & 0x01;
+
+		old = csi->buffers[index];
+		csi->buffers[index] = NULL;
+
+		/* engine stop */
+		sun4i_csi1_write(csi, SUN4I_CSI1_CAPTURE, 0);
+
+		dma_addr = csi->dummy_buffer->dma_addr;
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_A, dma_addr[0]);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_A, dma_addr[1]);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_A, dma_addr[2]);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO0_BUFFER_B, dma_addr[0]);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO1_BUFFER_B, dma_addr[1]);
+		sun4i_csi1_write(csi, SUN4I_CSI1_FIFO2_BUFFER_B, dma_addr[2]);
+
+		csi->active = false;
+	}
+
+	spin_unlock(csi->buffer_lock);
+
+	if (sequence != -1)
+		dev_info(csi->dev, "%s(): engine stopped (%lluframes).\n",
+			 __func__, sequence);
+
+	if (old) {
+		old->v4l2_buffer.vb2_buf.timestamp = ktime_get_ns();
+		old->v4l2_buffer.sequence = -1;
+		if (old->v4l2_buffer.vb2_buf.state == VB2_BUF_STATE_ACTIVE)
+			vb2_buffer_done(&old->v4l2_buffer.vb2_buf, VB2_BUF_STATE_ERROR);
+	}
+}
+
 static irqreturn_t sun4i_csi1_isr(int irq, void *dev_id)
 {
 	struct sun4i_csi1 *csi = (struct sun4i_csi1 *) dev_id;
@@ -383,9 +434,11 @@ static irqreturn_t sun4i_csi1_active_isr(int irq, void *dev_id)
 	if (val)
 		/* V4L2_EVENT_SOURCE_CHANGE */
 		printk("%s(): Link active.\n", __func__);
-	else
+	else {
 		/* V4L2_EVENT_EOS */
 		printk("%s(): Link lost.\n", __func__);
+		sun4i_csi1_stream_ends(csi);
+	}
 
 	return IRQ_HANDLED;
 }
@@ -888,12 +941,22 @@ static void sun4i_csi1_engine_start(struct sun4i_csi1 *csi)
 	/* start. */
 	sun4i_csi1_mask(csi, SUN4I_CSI1_CAPTURE, 0x02, 0x02);
 
+	csi->active = true;
+
 	spin_unlock_irqrestore(csi->buffer_lock, flags);
 }
 
 static void sun4i_csi1_engine_stop(struct sun4i_csi1 *csi)
 {
-	sun4i_csi1_write_spin(csi, SUN4I_CSI1_CAPTURE, 0);
+	unsigned long flags;
+
+	spin_lock_irqsave(csi->buffer_lock, flags);
+
+	sun4i_csi1_write(csi, SUN4I_CSI1_CAPTURE, 0);
+
+	csi->active = false;
+
+	spin_unlock_irqrestore(csi->buffer_lock, flags);
 }
 
 static int sun4i_csi1_streaming_start(struct vb2_queue *queue, unsigned int count)
