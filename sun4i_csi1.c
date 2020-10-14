@@ -55,6 +55,10 @@ struct sun4i_csi1 {
 
 	void __iomem *mmio;
 
+	struct gpio_desc *gpio_active;
+	int irq_active;
+	int irq_csi;
+
 	bool powered;
 
 	struct v4l2_device v4l2_dev[1];
@@ -371,6 +375,21 @@ static irqreturn_t sun4i_csi1_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static irqreturn_t sun4i_csi1_active_isr(int irq, void *dev_id)
+{
+	struct sun4i_csi1 *csi = (struct sun4i_csi1 *) dev_id;
+	int val = gpiod_get_value(csi->gpio_active);
+
+	if (val)
+		/* V4L2_EVENT_SOURCE_CHANGE */
+		printk("%s(): Link active.\n", __func__);
+	else
+		/* V4L2_EVENT_EOS */
+		printk("%s(): Link lost.\n", __func__);
+
+	return IRQ_HANDLED;
+}
+
 static int sun4i_csi1_resources_get(struct sun4i_csi1 *csi,
 				    struct platform_device *platform_dev)
 {
@@ -422,10 +441,34 @@ static int sun4i_csi1_resources_get(struct sun4i_csi1 *csi,
 
 	ret = devm_request_irq(dev, irq, sun4i_csi1_isr, 0, MODULE_NAME, csi);
 	if (ret) {
-		dev_err(dev, "%s(): devm_request_irq() failed: %d.\n",
-			__func__, ret);
+		dev_err(dev, "%s(): devm_request_irq(\"%s\") failed: %d.\n",
+			__func__, "csi1", ret);
 		return ret;
 	}
+	csi->irq_csi = irq;
+
+	csi->gpio_active = devm_gpiod_get(dev, "active", GPIOD_IN);
+	if (IS_ERR(csi->gpio_active)) {
+		dev_err(dev, "%s(): devm_gpiod_get(\"%s\") failed: %ld\n",
+			__func__, "active", PTR_ERR(csi->gpio_active));
+		return PTR_ERR(csi->gpio_active);
+	}
+
+	irq = gpiod_to_irq(csi->gpio_active);
+	if (csi->gpio_active <= 0) {
+		dev_err(dev, "%s(): gpiod_to_irq() failed: %d\n", __func__, -irq);
+		return ret;
+	}
+
+	ret = devm_request_irq(dev, irq, sun4i_csi1_active_isr,
+			       IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
+			       MODULE_NAME, csi);
+	if (ret) {
+		dev_err(dev, "%s(): devm_request_irq(\"%s\") failed: %d\n",
+			__func__, "active", ret);
+		return ret;
+	}
+	csi->irq_active = irq;
 
 	return 0;
 }
