@@ -399,10 +399,17 @@ static void sun4i_csi1_stream_ends(struct sun4i_csi1 *csi)
 			 __func__, sequence);
 
 	if (old) {
-		old->v4l2_buffer.vb2_buf.timestamp = ktime_get_ns();
-		old->v4l2_buffer.sequence = -1;
-		if (old->v4l2_buffer.vb2_buf.state == VB2_BUF_STATE_ACTIVE)
-			vb2_buffer_done(&old->v4l2_buffer.vb2_buf, VB2_BUF_STATE_ERROR);
+		struct vb2_v4l2_buffer *v4l2_buffer = &old->v4l2_buffer;
+		struct vb2_buffer *vb2_buf = &v4l2_buffer->vb2_buf;
+		int i;
+
+		v4l2_buffer->sequence = sequence;
+		v4l2_buffer->flags |= V4L2_BUF_FLAG_LAST;
+
+		vb2_buf->timestamp = ktime_get_ns();
+		for (i = 0; i < csi->plane_count; i++)
+			vb2_set_plane_payload(vb2_buf, i, 0);
+		vb2_buffer_done(vb2_buf, VB2_BUF_STATE_DONE);
 	}
 }
 
@@ -1047,6 +1054,9 @@ static int sun4i_csi1_vb2_queue_initialize(struct sun4i_csi1 *csi)
 	queue->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 	queue->io_modes = VB2_MMAP | VB2_DMABUF;
 	queue->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+
+	/* So that we can signal end-of-stream */
+	queue->allow_zero_bytesused = 1;
 
 	queue->min_buffers_needed = 3;
 	queue->buf_struct_size = sizeof(struct sun4i_csi1_buffer);
